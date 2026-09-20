@@ -48,5 +48,15 @@ describe('agent defaults', () => {
         expect(resolveAgentDefaultConfig({}, 'gemini', '1.0.0').permissionMode).toBe('default');
         expect(resolveAgentDefaultConfig({}, 'openclaw', '1.0.0').permissionMode).toBe('default');
         expect(resolveAgentDefaultConfig({}, 'agy', '1.0.0').permissionMode).toBe('default');
+        expect(resolveAgentDefaultConfig({}, 'kimi', '1.0.0')).toEqual({
+            permissionMode: 'default',
+            modelMode: 'default',
+            effortLevel: null,
+        });
+        expect(resolveAgentDefaultConfig({}, 'traex', '1.0.0')).toEqual({
+            permissionMode: 'default',
+            modelMode: 'default',
+            effortLevel: null,
+        });
     });
 });

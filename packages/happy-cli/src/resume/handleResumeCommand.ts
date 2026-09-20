@@ -40,9 +40,18 @@ export function parseResumeCommandArgs(args: string[]): { showHelp: boolean; ses
     };
 }
 
-function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | null {
+function resolveFlavor(metadata: Metadata): 'codex' | 'claude' | 'kimi' | 'traex' | 'agy' | null {
     if (metadata.flavor === 'codex' || metadata.codexThreadId) {
         return 'codex';
+    }
+    if (metadata.flavor === 'kimi' || metadata.kimiSessionId) {
+        return 'kimi';
+    }
+    if (metadata.flavor === 'traex' || metadata.traexSessionId) {
+        return 'traex';
+    }
+    if (metadata.flavor === 'agy' || metadata.agyConversationId) {
+        return 'agy';
     }
     if (metadata.flavor === 'claude' || metadata.claudeSessionId) {
         return 'claude';
@@ -80,6 +89,48 @@ export function buildResumeLaunch(session: ResumableHappySession, options: Resum
             args.push('--started-by', options.startedBy);
         }
         args.push('--resume', metadata.claudeSessionId);
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
+    if (flavor === 'kimi') {
+        if (!metadata.kimiSessionId) {
+            throw new Error(`Happy session ${session.id} is missing its Kimi session ID.`);
+        }
+        const args = ['kimi', '--resume', metadata.kimiSessionId];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
+    if (flavor === 'traex') {
+        if (!metadata.traexSessionId) {
+            throw new Error(`Happy session ${session.id} is missing its TraeX session ID.`);
+        }
+        const args = ['traex', '--resume', metadata.traexSessionId];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
+        return {
+            cwd: metadata.path,
+            args,
+        };
+    }
+
+    if (flavor === 'agy') {
+        if (!metadata.agyConversationId) {
+            throw new Error(`Happy session ${session.id} is missing its Antigravity conversation ID.`);
+        }
+        const args = ['agy', '--resume', metadata.agyConversationId];
+        if (options.startedBy) {
+            args.push('--started-by', options.startedBy);
+        }
         return {
             cwd: metadata.path,
             args,

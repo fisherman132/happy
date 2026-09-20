@@ -43,13 +43,45 @@ const agentIcons = {
     gemini: require('@/assets/images/icon-gemini.png'),
 };
 
-type AgentKey = 'claude' | 'codex' | 'openclaw' | 'gemini';
+type AgentKey = 'claude' | 'codex' | 'openclaw' | 'gemini' | 'kimi' | 'traex';
+type ImageAgentKey = keyof typeof agentIcons;
 const AGENTS: { key: AgentKey; label: string }[] = [
     { key: 'claude', label: 'claude code' },
     { key: 'codex', label: 'codex' },
+    { key: 'kimi', label: 'kimi' },
+    { key: 'traex', label: 'traex' },
     { key: 'openclaw', label: 'openclaw' },
     { key: 'gemini', label: 'gemini' },
 ];
+
+function isImageAgent(agent: AgentKey): agent is ImageAgentKey {
+    return agent in agentIcons;
+}
+
+function AgentIcon({
+    agent,
+    size = 15,
+}: {
+    agent: AgentKey;
+    size?: number;
+}) {
+    const { theme } = useUnistyles();
+    if (agent === 'kimi') {
+        return <Ionicons name="moon-outline" size={size} color={theme.colors.textSecondary} />;
+    }
+    if (agent === 'traex') {
+        return <Ionicons name="code-slash-outline" size={size} color={theme.colors.textSecondary} />;
+    }
+    if (!isImageAgent(agent)) return null;
+    return (
+        <Image
+            source={agentIcons[agent]}
+            style={{ width: size, height: size }}
+            contentFit="contain"
+            tintColor={theme.colors.textSecondary}
+        />
+    );
+}
 
 // Sample data for pickers
 type PickerItem = { key: string; label: string };
@@ -466,12 +498,7 @@ function SessionComposerDemo() {
                                         onPress={cycleAgent}
                                         style={(p) => [{ flexDirection: 'row', alignItems: 'center', gap: 8 }, p.pressed && styles.configRowPressed]}
                                     >
-                                        <Image
-                                            source={agentIcons[agent.key]}
-                                            style={{ width: 15, height: 15 }}
-                                            contentFit="contain"
-                                            tintColor={theme.colors.textSecondary}
-                                        />
+                                        <AgentIcon agent={agent.key} />
                                         <Text style={styles.configLabel} numberOfLines={1}>
                                             {agent.label}
                                         </Text>

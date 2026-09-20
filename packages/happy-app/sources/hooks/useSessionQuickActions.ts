@@ -70,7 +70,12 @@ function getResumeAvailability(session: Session, machine: Machine | null | undef
         };
     }
 
-    const hasBackendResumeId = Boolean(session.metadata?.claudeSessionId || session.metadata?.codexThreadId);
+    const hasBackendResumeId = Boolean(
+        session.metadata?.claudeSessionId
+        || session.metadata?.codexThreadId
+        || session.metadata?.kimiSessionId
+        || session.metadata?.traexSessionId
+    );
     if (!hasBackendResumeId) {
         const message = t('sessionInfo.resumeSessionMissingBackendId');
         return {
@@ -207,6 +212,7 @@ export function useSessionQuickActions(
             sessionId: session.id,
             model: modeMeta.model ?? undefined,
             permissionMode: modeMeta.permissionMode,
+            effort: modeMeta.effort,
         });
 
         switch (result.type) {

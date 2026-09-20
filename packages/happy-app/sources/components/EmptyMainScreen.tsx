@@ -242,6 +242,9 @@ export function EmptyMainScreen({
                 <Text style={styles.terminalText}>
                     $ happy codex
                 </Text>
+                <Text style={styles.terminalText}>
+                    $ happy kimi
+                </Text>
             </View>}
 
 

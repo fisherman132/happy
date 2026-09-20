@@ -22,6 +22,8 @@ export class Session {
     readonly hookSettingsPath: string;
     /** JavaScript runtime to use for spawning Claude Code (default: 'node') */
     readonly jsRuntime: JsRuntime;
+    readonly submitTerminalMessage: (text: string) => Promise<void>;
+    private remotePromptHandler: ((text: string) => void) | null = null;
 
     sessionId: string | null;
     mode: 'local' | 'remote' = 'local';
@@ -51,6 +53,7 @@ export class Session {
         hookSettingsPath: string,
         /** JavaScript runtime to use for spawning Claude Code (default: 'node') */
         jsRuntime?: JsRuntime,
+        submitTerminalMessage?: (text: string) => Promise<void>,
     }) {
         this.path = opts.path;
         this.api = opts.api;
@@ -67,6 +70,9 @@ export class Session {
         this._onAbort = opts.onAbort;
         this.hookSettingsPath = opts.hookSettingsPath;
         this.jsRuntime = opts.jsRuntime ?? 'node';
+        this.submitTerminalMessage = opts.submitTerminalMessage ?? (async () => {
+            throw new Error('Terminal message submission is unavailable');
+        });
 
         // Start keep alive
         this.client.keepAlive(this.thinking, this.mode);
@@ -97,6 +103,14 @@ export class Session {
 
     onAbort = () => {
         this._onAbort?.();
+    }
+
+    setRemotePromptHandler = (handler: ((text: string) => void) | null): void => {
+        this.remotePromptHandler = handler;
+    }
+
+    showRemotePrompt = (text: string): void => {
+        this.remotePromptHandler?.(text);
     }
 
     /**

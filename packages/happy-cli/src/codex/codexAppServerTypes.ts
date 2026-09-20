@@ -14,6 +14,27 @@ export type InitializeParams = {
 
 export type InitializeResponse = { userAgent: string };
 
+export type ModelListParams = {
+    cursor?: string | null;
+    limit?: number | null;
+    includeHidden?: boolean | null;
+};
+
+export type CodexModel = {
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    isDefault: boolean;
+    defaultReasoningEffort: ReasoningEffort;
+};
+
+export type ModelListResponse = {
+    data: CodexModel[];
+    nextCursor?: string | null;
+};
+
 // --- Thread lifecycle ---
 
 export type NewConversationParams = {

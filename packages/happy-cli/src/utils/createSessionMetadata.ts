@@ -20,7 +20,7 @@ import packageJson from '../../package.json';
 /**
  * Backend flavor identifier for session metadata.
  */
-export type BackendFlavor = 'claude' | 'codex' | 'gemini' | 'opencode' | 'openclaw' | 'agy' | 'acp';
+export type BackendFlavor = 'claude' | 'codex' | 'gemini' | 'opencode' | 'openclaw' | 'agy' | 'kimi' | 'traex' | 'acp';
 
 /**
  * Options for creating session metadata.
@@ -36,6 +36,8 @@ export interface CreateSessionMetadataOptions {
     sandbox?: SandboxConfig;
     /** Whether the backend runs with "dangerously skip permissions" behavior */
     dangerouslySkipPermissions?: boolean;
+    /** Optional user-specified display name for the session. */
+    name?: string;
     /** Happy session id this session was forked from. */
     parentSessionId?: string;
     /** Happy message id used as the fork rewind point. */
@@ -113,6 +115,7 @@ export function createSessionMetadata(opts: CreateSessionMetadataOptions): Sessi
         flavor: opts.flavor,
         sandbox: opts.sandbox?.enabled ? opts.sandbox : null,
         dangerouslySkipPermissions: opts.dangerouslySkipPermissions ?? null,
+        ...(opts.name?.trim() ? { name: opts.name.trim() } : {}),
         ...(gitBranch ? { gitBranch } : {}),
         ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId } : {}),
         ...(opts.forkedFromMessageId ? { forkedFromMessageId: opts.forkedFromMessageId } : {}),

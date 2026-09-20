@@ -11,6 +11,7 @@ export async function handleCodexCommand(args: string[]): Promise<void> {
   let permissionMode: PermissionMode | undefined = undefined
   let model: string | undefined = undefined
   let effort: ReasoningEffort | undefined = undefined
+  let sessionName: string | undefined = undefined
   const sandboxArgs = extractNoSandboxFlag(args)
   const codexArgs = extractCodexResumeFlag(sandboxArgs.args)
 
@@ -23,6 +24,11 @@ export async function handleCodexCommand(args: string[]): Promise<void> {
       model = codexArgs.args[++i]
     } else if (codexArgs.args[i] === '--effort') {
       effort = codexArgs.args[++i] as ReasoningEffort
+    } else if (codexArgs.args[i] === '--name') {
+      sessionName = codexArgs.args[++i]
+      if (!sessionName) {
+        throw new Error('Session name requires a value: happy codex --name <name>')
+      }
     } else if (codexArgs.args[i] === '--yolo') {
       permissionMode = 'yolo'
     }
@@ -39,5 +45,6 @@ export async function handleCodexCommand(args: string[]): Promise<void> {
     permissionMode,
     model,
     effort,
+    sessionName,
   })
 }

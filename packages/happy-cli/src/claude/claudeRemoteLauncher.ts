@@ -1,8 +1,5 @@
-import { render } from "ink";
 import { Session } from "./session";
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
-import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
-import React from "react";
 import { claudeRemote } from "./claudeRemote";
 import { claudeProviderAuthErrorMessage } from './utils/providerAuth';
 import { PermissionHandler } from "./utils/permissionHandler";
@@ -20,6 +17,8 @@ import { getAskUserQuestionToolCallIds } from "./utils/questionNotification";
 import { launchFailureMessage } from "./utils/launchFailureMessage";
 import { cleanupStdinAfterInk } from "@/utils/terminalStdinCleanup";
 import type { MessageParam, ContentBlockParam } from '@anthropic-ai/sdk/resources';
+import { startTerminalChat, type TerminalChat } from '@/agent/acp/terminalChat';
+import { showTerminalHistoryMessage } from '@/utils/terminalHistory';
 
 interface PermissionsField {
     date: number;
@@ -31,45 +30,11 @@ interface PermissionsField {
 export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
     logger.debug('[claudeRemoteLauncher] Starting remote launcher');
 
-    // Check if we have a TTY for UI rendering
-    const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
-    logger.debug(`[claudeRemoteLauncher] TTY available: ${hasTTY}`);
-
-    // Configure terminal
+    // Keep the message buffer for the existing formatter/logging pipeline. The
+    // interactive surface is readline-based so the terminal and phone can both
+    // submit prompts to the same remote Claude queue.
     let messageBuffer = new MessageBuffer();
-    let inkInstance: any = null;
-
-    if (hasTTY) {
-        console.clear();
-        inkInstance = render(React.createElement(RemoteModeDisplay, {
-            messageBuffer,
-            logPath: process.env.DEBUG ? session.logPath : undefined,
-            onExit: async () => {
-                // Exit the entire client
-                logger.debug('[remote]: Exiting client via Ctrl-C');
-                if (!exitReason) {
-                    exitReason = 'exit';
-                }
-                await abort();
-            },
-            onSwitchToLocal: () => {
-                // Switch to local mode
-                logger.debug('[remote]: Switching to local mode via double space');
-                doSwitch();
-            }
-        }), {
-            exitOnCtrlC: false,
-            patchConsole: false
-        });
-    }
-
-    if (hasTTY) {
-        process.stdin.resume();
-        if (process.stdin.isTTY) {
-            process.stdin.setRawMode(true);
-        }
-        process.stdin.setEncoding("utf8");
-    }
+    let terminalChat: TerminalChat | null = null;
 
     // Handle abort
     let exitReason: 'switch' | 'exit' | null = null;
@@ -87,6 +52,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         logger.debug('[remote]: doAbort');
         session.onAbort();
         await abort();
+        terminalChat?.setBusy(false);
+        terminalChat?.turnSettled();
     }
 
     async function doSwitch() {
@@ -97,10 +64,40 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
         await abort();
     }
 
+    terminalChat = startTerminalChat({
+        prompt: 'claude> ',
+        onSubmit: (text) => {
+            if (text === '/local') {
+                logger.debug('[remote]: Switching to native local mode via /local');
+                void doSwitch();
+                return;
+            }
+            terminalChat?.setBusy(true, 'claude is working…');
+            void session.submitTerminalMessage(text).catch((error) => {
+                terminalChat?.setBusy(false);
+                terminalChat?.writeAgentText(`Failed to submit prompt: ${error instanceof Error ? error.message : String(error)}\n`);
+                terminalChat?.turnSettled();
+            });
+        },
+        onRequestExit: () => {
+            logger.debug('[remote]: Exiting client via Ctrl-C');
+            if (!exitReason) {
+                exitReason = 'exit';
+            }
+            void abort();
+        },
+    });
+    session.setRemotePromptHandler((text) => {
+        terminalChat?.showRemotePrompt(text);
+        terminalChat?.setBusy(true, 'claude is working…');
+    });
+    session.client.onHistoryMessage((message) => showTerminalHistoryMessage(terminalChat, message));
+    terminalChat?.turnSettled();
+
     // When to abort
     session.client.rpcHandlerManager.registerHandler('abort', doAbort); // When abort clicked
     session.client.rpcHandlerManager.registerHandler('switch', doSwitch); // When switch clicked
-    // Removed catch-all stdin handler - now handled by RemoteModeDisplay keyboard handlers
+    // stdin is owned by the shared readline terminal chat above.
 
     // Create permission handler
     const permissionHandler = new PermissionHandler(session);
@@ -141,6 +138,17 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
         // Write to message log
         formatClaudeMessageForInk(message, messageBuffer);
+        if (message.type === 'assistant') {
+            const assistantMessage = message as SDKAssistantMessage;
+            const text = assistantMessage.message.content
+                ?.filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
+                .map((block) => block.text ?? '')
+                .filter(Boolean)
+                .join('\n');
+            if (text) {
+                terminalChat?.writeAgentText(`${text}\n`);
+            }
+        }
 
         // Track active tool calls
         if (message.type === 'assistant') {
@@ -416,7 +424,10 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                             await q.setPermissionMode(mode);
                         });
                     },
-                    onThinkingChange: session.onThinkingChange,
+                    onThinkingChange: (thinking) => {
+                        session.onThinkingChange(thinking);
+                        terminalChat?.setBusy(thinking, 'claude is working…');
+                    },
                     claudeEnvVars: session.claudeEnvVars,
                     claudeArgs: session.claudeArgs,
                     onMessage,
@@ -434,6 +445,8 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                         // run before the mapper has even opened that turn.
                         if (status === 'failed') await messageQueue.flush();
                         session.client.closeClaudeSessionTurn(status ?? 'completed');
+                        terminalChat?.setBusy(false);
+                        terminalChat?.turnSettled();
                         if (status !== 'failed' && !pending && session.queue.size() === 0) {
                             session.api.push().sendSessionNotification({
                                 kind: 'done',
@@ -462,7 +475,11 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
                     const authMessage = claudeProviderAuthErrorMessage(e);
                     if (authMessage) await messageQueue.flush();
                     session.client.closeClaudeSessionTurn('failed');
-                    session.client.sendSessionEvent({ type: 'message', message: authMessage ?? launchFailureMessage(e) });
+                    const failure = authMessage ?? launchFailureMessage(e);
+                    session.client.sendSessionEvent({ type: 'message', message: failure });
+                    terminalChat?.setBusy(false);
+                    terminalChat?.writeAgentText(`${failure}\n`);
+                    terminalChat?.turnSettled();
                     continue;
                 }
             } finally {
@@ -502,26 +519,22 @@ export async function claudeRemoteLauncher(session: Session): Promise<'switch' |
 
         // Reset Terminal
         const t0 = Date.now();
-        logger.debug(`[remote]: cleanup begin exitReason=${exitReason} hasInk=${!!inkInstance} rawMode=${(process.stdin as any).isRaw}`);
-        if (inkInstance) {
-            inkInstance.unmount();
-        }
-        logger.debug(`[remote]: ink.unmount() done +${Date.now() - t0}ms rawMode=${(process.stdin as any).isRaw}`);
+        logger.debug(`[remote]: cleanup begin exitReason=${exitReason} rawMode=${(process.stdin as any).isRaw}`);
+        session.setRemotePromptHandler(null);
+        terminalChat?.stop();
+        logger.debug(`[remote]: terminalChat.stop() done +${Date.now() - t0}ms rawMode=${(process.stdin as any).isRaw}`);
 
-        // Drain any keystrokes that landed in stdin while Ink owned it (e.g.
-        // extra spaces from the double-space switch confirmation, or anything
-        // typed before the user perceives that the switch has completed) so
-        // they don't leak into the next interactive child process when local
-        // mode takes stdin back via stdio: 'inherit'. Raw mode stays on for
-        // the whole window so the kernel does not echo any in-flight bytes
-        // at whatever screen position Ink last left the cursor.
-        await cleanupStdinAfterInk({
-            stdin: process.stdin,
-            drainMs: 150,
-            onDebug: (event) => {
-                logger.debug(`[remote]: stdin drain ${event.bytes}B / ${event.chunks} chunk(s) +${Date.now() - t0}ms`);
-            },
-        });
+        // Drain keystrokes typed while the readline surface was closing so they
+        // do not leak into native Claude when /local hands stdin back.
+        if (exitReason === 'switch') {
+            await cleanupStdinAfterInk({
+                stdin: process.stdin,
+                drainMs: 150,
+                onDebug: (event) => {
+                    logger.debug(`[remote]: stdin drain ${event.bytes}B / ${event.chunks} chunk(s) +${Date.now() - t0}ms`);
+                },
+            });
+        }
         logger.debug(`[remote]: cleanup done +${Date.now() - t0}ms rawMode=${(process.stdin as any).isRaw}`);
         messageBuffer.clear();
 

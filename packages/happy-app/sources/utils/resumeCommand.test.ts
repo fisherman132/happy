@@ -29,6 +29,24 @@ describe('buildResumeCommand', () => {
         })).toBe(`Set-Location -LiteralPath 'C:\\Users\\test\\project'; happy codex --resume 019ccca5-726b-7c61-b914-16de27dfab6e`);
     });
 
+    it('builds a Kimi resume command that enters the session directory first', () => {
+        expect(buildResumeCommand({
+            path: '/tmp/project',
+            os: 'darwin',
+            flavor: 'kimi',
+            kimiSessionId: 'kimi-session-123',
+        })).toBe(`cd '/tmp/project' && happy kimi --resume kimi-session-123`);
+    });
+
+    it('builds a TraeX resume command that enters the session directory first', () => {
+        expect(buildResumeCommand({
+            path: '/tmp/project',
+            os: 'darwin',
+            flavor: 'traex',
+            traexSessionId: 'traex-session-123',
+        })).toBe(`cd '/tmp/project' && happy traex --resume traex-session-123`);
+    });
+
     it('falls back to the bare resume command when no path is available', () => {
         expect(buildResumeCommand({
             flavor: 'claude',

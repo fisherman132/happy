@@ -48,7 +48,11 @@ vi.mock('@/utils/detectCLI', () => ({
         claude: false,
         codex: false,
         gemini: false,
-        openclaw: false
+        openclaw: false,
+        agy: false,
+        kimi: false,
+        traex: false,
+        detectedAt: 1,
     }))
 }));
 
@@ -237,6 +241,7 @@ describe('ApiMachineClient socket reconnection', () => {
             cliAvailability: expect.objectContaining({
                 claude: false,
                 codex: false,
+                kimi: false,
             }),
         }));
 

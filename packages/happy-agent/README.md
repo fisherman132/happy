@@ -74,6 +74,8 @@ happy-agent spawn --machine <machine-id> --path ~/new-project --create-dir
 
 # Choose a specific agent
 happy-agent spawn --machine <machine-id> --path ~/project --agent codex
+happy-agent spawn --machine <machine-id> --path ~/project --agent kimi
+happy-agent spawn --machine <machine-id> --path ~/project --agent traex
 
 # Output as JSON
 happy-agent spawn --machine <machine-id> --path ~/project --json

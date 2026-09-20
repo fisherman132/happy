@@ -71,7 +71,7 @@ export type EffortLevel = ModeOption;
 export type PermissionModeKey = string;
 export type ModelModeKey = string;
 
-export type AgentFlavor = 'claude' | 'codex' | 'gemini' | string | null | undefined;
+export type AgentFlavor = 'claude' | 'codex' | 'gemini' | 'kimi' | 'traex' | string | null | undefined;
 
 type Translate = (key: any) => string;
 
@@ -90,6 +90,10 @@ const GEMINI_MODEL_FALLBACKS: ModelMode[] = [
     { key: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash Lite', description: 'fastest' },
 ];
 
+export function isAcpCatalogDrivenFlavor(flavor: AgentFlavor): boolean {
+    return flavor === 'kimi' || flavor === 'traex';
+}
+
 export function mapMetadataOptions(options?: MetadataOption[] | null): ModeOption[] {
     if (!options || options.length === 0) {
         return [];
@@ -99,6 +103,26 @@ export function mapMetadataOptions(options?: MetadataOption[] | null): ModeOptio
         key: option.code,
         name: option.value,
         description: option.description ?? null,
+    }));
+}
+
+function mapMetadataModelOptions(models?: Metadata['models'] | null): ModelMode[] {
+    if (!models || models.length === 0) {
+        return [];
+    }
+
+    return models.map((model) => ({
+        key: model.code,
+        name: model.value,
+        description: model.description ?? null,
+        ...(model.id !== undefined ? { modelId: model.id } : {}),
+        ...(model.providerId !== undefined ? { providerId: model.providerId } : {}),
+        ...(model.providerKind !== undefined ? { providerKind: model.providerKind } : {}),
+        ...(model.providerName !== undefined ? { providerName: model.providerName } : {}),
+        ...(model.contextWindow !== undefined ? { contextWindow: model.contextWindow } : {}),
+        ...(model.serviceTiers !== undefined ? { serviceTiers: model.serviceTiers } : {}),
+        ...(model.thinkingLevels !== undefined ? { thinkingLevels: model.thinkingLevels } : {}),
+        ...(model.defaultThinkingLevel !== undefined ? { defaultThinkingLevel: model.defaultThinkingLevel } : {}),
     }));
 }
 
@@ -310,6 +334,9 @@ export function getHardcodedPermissionModes(flavor: AgentFlavor, translate: Tran
     if (flavor === 'codex') {
         return getCodexPermissionModes(translate);
     }
+    if (isAcpCatalogDrivenFlavor(flavor)) {
+        return [{ key: 'default', name: 'Default', description: translate('agentInput.permissionMode.default') }];
+    }
     if (flavor === 'gemini') {
         return getGeminiPermissionModes(translate);
     }
@@ -340,9 +367,25 @@ export function getAgyModelModes(): ModelMode[] {
     ];
 }
 
+export function getKimiModelModes(): ModelMode[] {
+    return [
+        { key: 'default', name: 'Default model', description: 'kimi-code/k3-256k', providerId: 'kimi', providerName: 'Kimi' },
+        { key: 'kimi-code/k3-256k', name: 'K3-256k', description: '256k context · fast', providerId: 'kimi', providerName: 'Kimi' },
+        { key: 'kimi-code/k3', name: 'K3', description: '1M context · capable', providerId: 'kimi', providerName: 'Kimi' },
+        { key: 'kimi-code/kimi-for-coding', name: 'K2.8 Preview', description: '1M context · code', providerId: 'kimi', providerName: 'Kimi' },
+        { key: 'kimi-code/kimi-for-coding-highspeed', name: 'K2.7 Code Highspeed', description: '256k context · highspeed', providerId: 'kimi', providerName: 'Kimi' },
+    ];
+}
+
 export function getHardcodedModelModes(flavor: AgentFlavor, _translate: Translate): ModelMode[] {
     if (flavor === 'codex') {
         return getCodexModelModes();
+    }
+    if (flavor === 'kimi') {
+        return getKimiModelModes();
+    }
+    if (isAcpCatalogDrivenFlavor(flavor)) {
+        return [{ key: 'default', name: 'Default model', description: null }];
     }
     if (flavor === 'gemini') {
         return getGeminiModelModes();
@@ -411,7 +454,7 @@ export function getAvailableModels(
         }
         return models;
     }
-    const metadataModels = mapMetadataOptions(metadata?.models);
+    const metadataModels = mapMetadataModelOptions(metadata?.models);
     if (metadataModels.length > 0) {
         if (flavor === 'codex' && !metadataModels.some((model) => model.key === 'default')) {
             return [{ key: 'default', name: 'default model', description: null }, ...metadataModels];
@@ -582,6 +625,15 @@ export function getEffortLevelsForModel(
             key: level,
             name: effortDisplayName(level),
         }));
+    }
+    if (isAcpCatalogDrivenFlavor(flavor)) {
+        const metadataModel = metadata?.models?.find((model) => model.code === modelKey);
+        if (metadataModel?.thinkingLevels?.length) {
+            return effortLevels(metadataModel.thinkingLevels);
+        }
+        if (metadata?.thoughtLevels?.length) {
+            return mapMetadataOptions(metadata.thoughtLevels);
+        }
     }
     // Claude's effort scale is a property of the SDK rather than of the model:
     // one union for every model, and a level the chosen model cannot reach is

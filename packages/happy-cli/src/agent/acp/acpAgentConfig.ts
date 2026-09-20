@@ -1,3 +1,6 @@
+import { KIMI_BIN, resolveKimiBin } from '@/kimi/constants';
+import { TRAEX_BIN, resolveTraexBin } from '@/traex/constants';
+
 export type AcpAgentConfig = {
   command: string;
   args: string[];
@@ -5,6 +8,8 @@ export type AcpAgentConfig = {
 
 export const KNOWN_ACP_AGENTS: Record<string, AcpAgentConfig> = {
   gemini: { command: 'gemini', args: ['--experimental-acp'] },
+  kimi: { command: KIMI_BIN, args: ['acp'] },
+  traex: { command: TRAEX_BIN, args: ['acp', 'serve'] },
   opencode: { command: 'opencode', args: ['acp'] },
 };
 
@@ -32,6 +37,21 @@ export function resolveAcpAgentConfig(cliArgs: string[]): ResolvedAcpAgentConfig
   }
 
   const agentName = cliArgs[0];
+  if (agentName === 'kimi') {
+    return {
+      agentName,
+      command: resolveKimiBin(),
+      args: ['acp', ...cliArgs.slice(1)],
+    };
+  }
+  if (agentName === 'traex') {
+    return {
+      agentName,
+      command: resolveTraexBin(),
+      args: ['acp', 'serve', ...cliArgs.slice(1)],
+    };
+  }
+
   const known = KNOWN_ACP_AGENTS[agentName];
   if (known) {
     const passthroughArgs = cliArgs

@@ -117,4 +117,16 @@ describe('CodexRemoteModeState', () => {
             effortResolution: { kind: 'ignored', incoming: 'impossible' },
         });
     });
+
+    it('accepts a model selected by the terminal picker', () => {
+        const state = new CodexRemoteModeState({
+            permissionMode: 'default',
+            model: 'gpt-old',
+        });
+
+        state.setModel('gpt-new');
+
+        expect(state.currentModel).toBe('gpt-new');
+        expect(state.resolve(undefined).model).toBe('gpt-new');
+    });
 });

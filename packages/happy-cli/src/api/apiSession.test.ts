@@ -731,7 +731,7 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(typeof (sessionOnly as any).content.time).toBe('number');
     });
 
-    it('sends ACP agent messages through enqueueMessage', async () => {
+    it.each(['codex', 'kimi', 'traex'] as const)('sends %s ACP agent messages through enqueueMessage', async (provider) => {
         const client = new ApiSessionClient('fake-token', session);
         mockAxiosPost.mockResolvedValueOnce({
             data: {
@@ -739,7 +739,7 @@ describe('ApiSessionClient v3 messages API migration', () => {
             }
         });
 
-        client.sendAgentMessage('codex', {
+        client.sendAgentMessage(provider, {
             type: 'message',
             message: 'hi'
         });
@@ -759,7 +759,7 @@ describe('ApiSessionClient v3 messages API migration', () => {
             role: 'agent',
             content: {
                 type: 'acp',
-                provider: 'codex',
+                provider,
                 data: {
                     type: 'message',
                     message: 'hi'
@@ -974,6 +974,64 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect(onUserMessage).toHaveBeenCalledWith(userMessage);
         expect(onMessage).toHaveBeenCalledTimes(1);
         expect(onMessage).toHaveBeenCalledWith(agentMessage);
+    });
+
+    it('emits skipped reconnect messages as terminal history without routing user prompts', async () => {
+        const client = new ApiSessionClient('fake-token', session);
+        const onUserMessage = vi.fn();
+        const onHistoryMessage = vi.fn();
+        client.onUserMessage(onUserMessage);
+        client.skipExistingMessages();
+
+        const userMessage = {
+            role: 'user',
+            content: { type: 'text', text: 'historical prompt' }
+        };
+        const sessionMessage = {
+            role: 'session',
+            content: {
+                type: 'session',
+                data: {
+                    id: 'history-agent',
+                    time: 1000,
+                    role: 'agent',
+                    ev: { t: 'text', text: 'historical answer' }
+                }
+            }
+        };
+
+        mockAxiosGet.mockResolvedValueOnce({
+            data: {
+                messages: [
+                    {
+                        id: 'msg-1',
+                        seq: 1,
+                        content: { t: 'encrypted', c: encryptContent(session, userMessage) },
+                        localId: null,
+                        createdAt: 1000,
+                        updatedAt: 1000
+                    },
+                    {
+                        id: 'msg-2',
+                        seq: 2,
+                        content: { t: 'encrypted', c: encryptContent(session, sessionMessage) },
+                        localId: null,
+                        createdAt: 2000,
+                        updatedAt: 2000
+                    }
+                ],
+                hasMore: false
+            }
+        });
+
+        await (client as any).fetchMessages();
+        client.onHistoryMessage(onHistoryMessage);
+
+        expect(onUserMessage).not.toHaveBeenCalled();
+        expect(onHistoryMessage).toHaveBeenCalledTimes(2);
+        expect(onHistoryMessage).toHaveBeenNthCalledWith(1, userMessage);
+        expect(onHistoryMessage).toHaveBeenNthCalledWith(2, sessionMessage);
+        expect((client as any).lastReceivedSeq).toBe(2);
     });
 
     it('routes file events without logging sensitive names or refs', async () => {

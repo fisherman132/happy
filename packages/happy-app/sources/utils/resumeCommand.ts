@@ -4,6 +4,8 @@ export type ResumeCommandMetadata = {
     flavor?: string | null;
     claudeSessionId?: string | null;
     codexThreadId?: string | null;
+    kimiSessionId?: string | null;
+    traexSessionId?: string | null;
     client?: { id?: string | null } | null;
     capabilities?: { resume?: boolean | null } | null;
 };
@@ -31,6 +33,12 @@ function buildResumeInvocation(metadata: ResumeCommandMetadata): string | null {
     }
     if ((metadata.flavor === 'codex' || metadata.flavor === 'openai' || metadata.flavor === 'gpt') && metadata.codexThreadId) {
         return `happy codex --resume ${metadata.codexThreadId}`;
+    }
+    if ((metadata.flavor === 'kimi' || metadata.kimiSessionId) && metadata.kimiSessionId) {
+        return `happy kimi --resume ${metadata.kimiSessionId}`;
+    }
+    if ((metadata.flavor === 'traex' || metadata.traexSessionId) && metadata.traexSessionId) {
+        return `happy traex --resume ${metadata.traexSessionId}`;
     }
     if (metadata.claudeSessionId) {
         return `happy claude --resume ${metadata.claudeSessionId}`;

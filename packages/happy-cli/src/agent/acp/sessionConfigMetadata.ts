@@ -4,6 +4,11 @@ import type { SessionConfigOption, SessionModeState, SessionModelState } from '@
 type SupportedCategory = 'mode' | 'model' | 'thought_level';
 
 const SUPPORTED_CATEGORIES = new Set<SupportedCategory>(['mode', 'model', 'thought_level']);
+const CATEGORY_HINTS: Record<SupportedCategory, readonly string[]> = {
+  mode: ['mode', 'permission', 'permissions'],
+  model: ['model', 'models'],
+  thought_level: ['thought', 'thinking', 'effort', 'reasoning'],
+};
 
 type MetadataOption = {
   code: string;
@@ -70,6 +75,46 @@ function flattenConfigSelectOptions(options: unknown): MetadataOption[] {
   return flattened;
 }
 
+function tokensForCategoryHeuristic(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+}
+
+function optionMatchesCategory(option: SessionConfigOption, category: SupportedCategory): boolean {
+  if (
+    typeof option.category === 'string'
+    && SUPPORTED_CATEGORIES.has(option.category as SupportedCategory)
+  ) {
+    return option.category === category;
+  }
+
+  const hints = CATEGORY_HINTS[category];
+  const tokens = [
+    ...tokensForCategoryHeuristic(option.id),
+    ...tokensForCategoryHeuristic(option.name),
+  ];
+  return tokens.some((token) => hints.includes(token));
+}
+
+function resolveOptionCategory(option: SessionConfigOption): SupportedCategory | null {
+  if (typeof option.category === 'string') {
+    return SUPPORTED_CATEGORIES.has(option.category as SupportedCategory)
+      ? option.category as SupportedCategory
+      : null;
+  }
+
+  // Check narrower terms first so ids like `sessionModel` do not match `mode`.
+  for (const category of ['thought_level', 'model', 'mode'] as const) {
+    if (optionMatchesCategory(option, category)) {
+      return category;
+    }
+  }
+  return null;
+}
+
 function findConfigOptionByCategory(
   configOptions: SessionConfigOption[],
   category: SupportedCategory,
@@ -78,7 +123,7 @@ function findConfigOptionByCategory(
     if (option.type !== 'select') {
       continue;
     }
-    if (option.category !== category) {
+    if (resolveOptionCategory(option) !== category) {
       continue;
     }
     return option;
@@ -177,9 +222,7 @@ export function mergeAcpSessionConfigIntoMetadata(metadata: Metadata, snapshot: 
   let hasModelFromConfig = false;
 
   if (Array.isArray(snapshot.configOptions)) {
-    const filtered = snapshot.configOptions.filter(
-      (option) => option.type === 'select' && typeof option.category === 'string' && SUPPORTED_CATEGORIES.has(option.category as SupportedCategory),
-    );
+    const filtered = snapshot.configOptions.filter((option) => option.type === 'select');
 
     const modeOption = findConfigOptionByCategory(filtered, 'mode');
     const modelOption = findConfigOptionByCategory(filtered, 'model');

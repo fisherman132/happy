@@ -68,6 +68,20 @@ describe('settings', () => {
             });
         });
 
+        it('should preserve Kimi CLI warning dismissals', () => {
+            expect(settingsParse({
+                dismissedCLIWarnings: {
+                    perMachine: { 'machine-1': { kimi: true } },
+                    global: { kimi: false },
+                },
+            })).toMatchObject({
+                dismissedCLIWarnings: {
+                    perMachine: { 'machine-1': { kimi: true } },
+                    global: { kimi: false },
+                },
+            });
+        });
+
         it('should handle nested objects as extra fields', () => {
             const settingsWithNested = {
                 viewInline: false,

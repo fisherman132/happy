@@ -20,7 +20,7 @@ function createBaseMetadata(): Metadata {
 function selectOption(input: {
   id: string;
   name: string;
-  category: string;
+  category?: string;
   currentValue: string;
   options: Array<{ value: string; name: string; description?: string | null }>;
 }): SessionConfigOption {
@@ -28,7 +28,7 @@ function selectOption(input: {
     type: 'select',
     id: input.id,
     name: input.name,
-    category: input.category,
+    ...(input.category !== undefined ? { category: input.category } : {}),
     currentValue: input.currentValue,
     options: input.options,
   };
@@ -180,5 +180,60 @@ describe('sessionConfigMetadata', () => {
     expect(extractConfigOptionsFromPayload([option])).toEqual([option]);
     expect(extractConfigOptionsFromPayload({ configOptions: [option] })).toEqual([option]);
     expect(extractConfigOptionsFromPayload({})).toBeNull();
+  });
+
+  it('uses id/name heuristics for ACP config options without a category', () => {
+    const metadata = createBaseMetadata();
+
+    const next = mergeAcpSessionConfigIntoMetadata(metadata, {
+      configOptions: [
+        selectOption({
+          id: 'sessionModel',
+          name: 'Model',
+          currentValue: 'kimi-k2,thinking',
+          options: [{ value: 'kimi-k2,thinking', name: 'Kimi K2 (thinking)' }],
+        }),
+        selectOption({
+          id: 'thinking-effort',
+          name: 'Thinking',
+          currentValue: 'high',
+          options: [{ value: 'high', name: 'High' }],
+        }),
+        selectOption({
+          id: 'permission-mode',
+          name: 'Mode',
+          currentValue: 'default',
+          options: [{ value: 'default', name: 'Default' }],
+        }),
+      ],
+    });
+
+    expect(next.models).toEqual([
+      { code: 'kimi-k2,thinking', value: 'Kimi K2 (thinking)' },
+    ]);
+    expect(next.currentModelCode).toBe('kimi-k2,thinking');
+    expect(next.thoughtLevels).toEqual([{ code: 'high', value: 'High' }]);
+    expect(next.currentThoughtLevelCode).toBe('high');
+    expect(next.operatingModes).toEqual([{ code: 'default', value: 'Default' }]);
+    expect(next.currentOperatingModeCode).toBe('default');
+  });
+
+  it('ignores unknown explicit ACP categories instead of guessing from their names', () => {
+    const metadata = createBaseMetadata();
+
+    const next = mergeAcpSessionConfigIntoMetadata(metadata, {
+      configOptions: [
+        selectOption({
+          id: 'custom-model-routing',
+          name: 'Model Routing',
+          category: '_vendor_model',
+          currentValue: 'custom',
+          options: [{ value: 'custom', name: 'Custom' }],
+        }),
+      ],
+    });
+
+    expect(next.models).toBeUndefined();
+    expect(next.currentModelCode).toBeUndefined();
   });
 });

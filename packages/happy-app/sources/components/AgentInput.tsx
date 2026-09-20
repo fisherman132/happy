@@ -80,6 +80,8 @@ interface AgentInputProps {
             claude: boolean | null;
             codex: boolean | null;
             gemini?: boolean | null;
+            kimi?: boolean | null;
+            traex?: boolean | null;
         };
     };
     autocompletePrefixes: string[];
@@ -104,7 +106,7 @@ interface AgentInputProps {
     /** Plan quota windows from agent state, for the week stat and its popup. */
     sessionStatusUsageLimits?: UsageLimitsLike | null;
     onFileViewerPress?: () => void;
-    agentType?: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy';
+    agentType?: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'kimi' | 'traex';
     onAgentClick?: () => void;
     machineName?: string | null;
     onMachineClick?: () => void;
@@ -582,6 +584,42 @@ const AgentInputStatusRow = React.memo(function AgentInputStatusRow(p: StatusRow
                                             ...Typography.default()
                                         }}>
                                             gemini
+                                        </Text>
+                                    </View>
+                                )}
+                                {p.connectionStatus.cliStatus.kimi !== undefined && (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                        <Text style={{
+                                            fontSize: 11,
+                                            color: p.connectionStatus.cliStatus.kimi ? theme.colors.success : theme.colors.textDestructive,
+                                            ...Typography.default()
+                                        }}>
+                                            {p.connectionStatus.cliStatus.kimi ? '✓' : '✗'}
+                                        </Text>
+                                        <Text style={{
+                                            fontSize: 11,
+                                            color: p.connectionStatus.cliStatus.kimi ? theme.colors.success : theme.colors.textDestructive,
+                                            ...Typography.default()
+                                        }}>
+                                            kimi
+                                        </Text>
+                                    </View>
+                                )}
+                                {p.connectionStatus.cliStatus.traex !== undefined && (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                        <Text style={{
+                                            fontSize: 11,
+                                            color: p.connectionStatus.cliStatus.traex ? theme.colors.success : theme.colors.textDestructive,
+                                            ...Typography.default()
+                                        }}>
+                                            {p.connectionStatus.cliStatus.traex ? '✓' : '✗'}
+                                        </Text>
+                                        <Text style={{
+                                            fontSize: 11,
+                                            color: p.connectionStatus.cliStatus.traex ? theme.colors.success : theme.colors.textDestructive,
+                                            ...Typography.default()
+                                        }}>
+                                            traex
                                         </Text>
                                     </View>
                                 )}
@@ -1472,7 +1510,13 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                             ? t('agentInput.agent.codex')
                                             : props.agentType === 'openclaw'
                                                 ? t('agentInput.agent.openclaw')
-                                                : t('agentInput.agent.gemini')}
+                                                : props.agentType === 'kimi'
+                                                    ? t('agentInput.agent.kimi')
+                                                    : props.agentType === 'traex'
+                                                        ? t('agentInput.agent.traex')
+                                                    : props.agentType === 'agy'
+                                                        ? 'Antigravity'
+                                                        : t('agentInput.agent.gemini')}
                                 </Text>
                             </Pressable>
                         )}

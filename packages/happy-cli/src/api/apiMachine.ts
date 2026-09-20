@@ -103,6 +103,8 @@ export const ResumeFallbackSchema = z.object({
         flavor: z.string().nullish(),
         claudeSessionId: z.string().optional(),
         codexThreadId: z.string().optional(),
+        kimiSessionId: z.string().optional(),
+        traexSessionId: z.string().optional(),
     }).passthrough(),
     metadataVersion: z.number().int().nonnegative(),
     agentStateVersion: z.number().int().nonnegative(),
@@ -114,7 +116,7 @@ export const ResumeFallbackSchema = z.object({
 
 export type ResumeFallback = z.infer<typeof ResumeFallbackSchema>;
 
-export type ResumeSessionOptions = { model?: string; permissionMode?: string; fallback?: ResumeFallback; fallbackReason?: string };
+export type ResumeSessionOptions = { model?: string; permissionMode?: string; effort?: string | null; fallback?: ResumeFallback; fallbackReason?: string };
 
 type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
@@ -365,7 +367,7 @@ export class ApiMachineClient {
         if (this.resumeSessionHandler) {
             if (!this.rpcHandlerManager.hasHandler(method)) {
                 this.rpcHandlerManager.registerHandler(method, async (params: any) => {
-                    const { sessionId, model, permissionMode, fallback, fallbackReason } = params || {};
+                    const { sessionId, model, permissionMode, effort, fallback, fallbackReason } = params || {};
 
                     if (!sessionId || typeof sessionId !== 'string') {
                         throw new Error('Session ID is required');
@@ -383,6 +385,7 @@ export class ApiMachineClient {
                     const result = await handler(sessionId, {
                         model,
                         permissionMode,
+                        effort,
                         fallback: parsedFallback?.success && parsedFallback.data.metadata.machineId === this.machine.id
                             ? parsedFallback.data : undefined,
                         // Free-form, client-supplied and only ever echoed back
@@ -588,7 +591,9 @@ export class ApiMachineClient {
             || prev.codex !== newAvailability.codex
             || prev.gemini !== newAvailability.gemini
             || prev.openclaw !== newAvailability.openclaw
-            || prev.agy !== newAvailability.agy;
+            || prev.agy !== newAvailability.agy
+            || prev.kimi !== newAvailability.kimi
+            || prev.traex !== newAvailability.traex;
         const resumeSupportChanged = !prevResume
             || prevResume.rpcAvailable !== newResumeSupport.rpcAvailable
             || prevResume.happyAgentAuthenticated !== newResumeSupport.happyAgentAuthenticated;

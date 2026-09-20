@@ -1,5 +1,3 @@
-import { render } from "ink";
-import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
 import type { ReasoningEffort } from './codexAppServerTypes';
@@ -19,8 +17,10 @@ import { join } from 'node:path';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { MessageBuffer } from "@/ui/ink/messageBuffer";
-import { CodexDisplay } from "@/ui/ink/CodexDisplay";
+import { startTerminalChat, type TerminalChat } from '@/agent/acp/terminalChat';
 import { trimIdent } from "@/utils/trimIdent";
+import { enqueueCodexTerminalInput } from './codexTerminalInput';
+import { showTerminalHistoryMessage } from '@/utils/terminalHistory';
 import { notifyDaemonSessionStarted } from "@/daemon/controlClient";
 import { encodeBase64, decodeBase64 } from '@/api/encryption';
 import type { Session as ApiSession, UserMessage } from '@/api/types';
@@ -102,6 +102,7 @@ export async function runCodex(opts: {
     permissionMode?: PermissionMode;
     model?: string;
     effort?: ReasoningEffort;
+    sessionName?: string;
 }): Promise<void> {
     // Early check: ensure Codex CLI is installed before proceeding
     try {
@@ -167,6 +168,7 @@ export async function runCodex(opts: {
         startedBy: opts.startedBy,
         sandbox: sandboxConfig,
         dangerouslySkipPermissions: initialPermissionMode === 'yolo' || initialPermissionMode === 'bypassPermissions',
+        name: opts.sessionName,
         ...(forkedFromSessionId ? { parentSessionId: forkedFromSessionId } : {}),
         ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
         ...(isSideChat ? { isSideChat: true } : {}),
@@ -294,6 +296,7 @@ export async function runCodex(opts: {
 
     const handleUserMessage = createSerialAsyncHandler<UserMessage>(async (message) => {
         const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
+        terminalChat?.showRemotePrompt(message.content.text);
 
         const modeResolution = remoteModeState.resolve(message.meta);
         if (modeResolution.permission.kind === 'updated') {
@@ -516,44 +519,91 @@ export async function runCodex(opts: {
 
     registerKillSessionHandler(session.rpcHandlerManager, handleKillSession);
 
-    //
-    // Initialize Ink UI
-    //
+    client = new CodexAppServerClient(sandboxConfig);
 
     const messageBuffer = new MessageBuffer();
-    const hasTTY = process.stdout.isTTY && process.stdin.isTTY;
-    let inkInstance: any = null;
+    let terminalChat: TerminalChat | null = null;
 
-    if (hasTTY) {
-        console.clear();
-        inkInstance = render(React.createElement(CodexDisplay, {
-            messageBuffer,
-            logPath: process.env.DEBUG ? logger.getLogPath() : undefined,
-            onExit: async () => {
-                // Exit the agent
-                logger.debug('[codex]: Exiting agent via Ctrl-C');
-                shouldExit = true;
-                await handleAbort();
+    const createCodexTerminalChat = () => startTerminalChat({
+        prompt: 'codex> ',
+        onSubmit: (text) => {
+            if (text === '/model' || text.startsWith('/model ')) {
+                void (async () => {
+                    try {
+                        const requested = text.slice('/model'.length).trim();
+                        const response = await client.listModels();
+                        const models = response.data.filter((model) => !model.hidden);
+                        const direct = requested
+                            ? models.find((model) => model.model === requested
+                                || model.id === requested
+                                || model.displayName.toLowerCase() === requested.toLowerCase())
+                            : undefined;
+                        const selected = requested
+                            ? direct?.model ?? null
+                            : await terminalChat?.pick({
+                                title: 'Select model',
+                                currentKey: remoteModeState.currentModel,
+                                options: models.map((model) => ({
+                                    key: model.model,
+                                    label: model.displayName,
+                                    description: model.description,
+                                })),
+                            }) ?? null;
+                        if (!selected) {
+                            if (requested) {
+                                terminalChat?.writeAgentText(`Unknown Codex model: ${requested}\n`);
+                                terminalChat?.turnSettled();
+                            }
+                            return;
+                        }
+                        remoteModeState.setModel(selected);
+                        session.updateMetadata((metadata) => ({
+                            ...metadata,
+                            models: models.map((model) => ({
+                                code: model.model,
+                                value: model.displayName,
+                                description: model.description,
+                            })),
+                            currentModelCode: selected,
+                            modelMode: selected,
+                        }));
+                        if (requested) {
+                            terminalChat?.writeAgentText(`Selected ${direct?.displayName ?? selected}\n`);
+                            terminalChat?.turnSettled();
+                        }
+                    } catch (error) {
+                        terminalChat?.writeAgentText(`Unable to load Codex models: ${error instanceof Error ? error.message : String(error)}\n`);
+                        terminalChat?.turnSettled();
+                    }
+                })();
+                return;
             }
-        }), {
-            exitOnCtrlC: false,
-            patchConsole: false
-        });
-    }
-
-    if (hasTTY) {
-        process.stdin.resume();
-        if (process.stdin.isTTY) {
-            process.stdin.setRawMode(true);
-        }
-        process.stdin.setEncoding("utf8");
-    }
+            if (messageQueue.isClosed()) return;
+            const mode: EnhancedMode = {
+                permissionMode: remoteModeState.currentPermissionMode,
+                model: remoteModeState.currentModel,
+                appendSystemPrompt: currentAppendSystemPrompt,
+                effort: remoteModeState.currentEffort,
+            };
+            enqueueCodexTerminalInput({
+                text,
+                mode,
+                queue: messageQueue,
+                sendSessionProtocolMessage: (envelope) => session.sendSessionProtocolMessage(envelope),
+            });
+        },
+        onRequestExit: () => {
+            logger.debug('[codex]: Exiting agent via Ctrl-C');
+            shouldExit = true;
+            messageQueue.close();
+            void handleAbort();
+        },
+    });
+    session.onHistoryMessage((message) => showTerminalHistoryMessage(terminalChat, message));
 
     //
     // Start Context 
     //
-
-    client = new CodexAppServerClient(sandboxConfig);
 
     permissionHandler = new CodexPermissionHandler(session);
     // Drop any permission requests left in agent state from a previous CLI
@@ -688,7 +738,9 @@ export async function runCodex(opts: {
 
         // Add messages to the ink UI buffer based on message type
         if (msg.type === 'agent_message') {
-            messageBuffer.addMessage((msg as any).message, 'assistant');
+            const text = String((msg as any).message ?? '');
+            messageBuffer.addMessage(text, 'assistant');
+            if (text) terminalChat?.writeAgentText(`${text}\n`);
         } else if (msg.type === 'agent_reasoning_delta') {
             // Skip reasoning deltas in the UI to reduce noise
         } else if (msg.type === 'agent_reasoning' && !isSubagentScopedEvent) {
@@ -704,6 +756,7 @@ export async function runCodex(opts: {
             );
         } else if (msg.type === 'task_started') {
             messageBuffer.addMessage('Starting task...', 'status');
+            terminalChat?.setBusy(true, 'codex is working…');
         } else if (msg.type === 'task_complete') {
             // Ready is emitted from the main loop's idle check so pushes only fire once
             // after the queue is actually drained.
@@ -714,6 +767,7 @@ export async function runCodex(opts: {
             } else {
                 messageBuffer.addMessage('Task completed', 'status');
             }
+            terminalChat?.setBusy(false);
         } else if (msg.type === 'turn_aborted') {
             const failure = describeCodexFailure(msg);
             if (failure) {
@@ -722,6 +776,7 @@ export async function runCodex(opts: {
             } else {
                 messageBuffer.addMessage('Turn aborted', 'status');
             }
+            terminalChat?.setBusy(false);
         }
 
         if (msg.type === 'task_started') {
@@ -827,6 +882,8 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect begin');
         await client.connect();
         logger.debug('[codex]: client.connect done');
+        terminalChat = createCodexTerminalChat();
+        terminalChat?.turnSettled();
 
         if (opts.resumeThreadId) {
             await resumeExistingThread({
@@ -937,6 +994,7 @@ export async function runCodex(opts: {
             // Display user messages in the UI
             if (message.message.trim().length > 0) {
                 messageBuffer.addMessage(message.message, 'user');
+                terminalChat?.setBusy(true, 'codex is working…');
             }
 
             try {
@@ -1028,6 +1086,8 @@ export async function runCodex(opts: {
                 activeTurnPermissionMode = undefined;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
+                terminalChat?.setBusy(false);
+                terminalChat?.turnSettled();
                 emitReadyIfIdle({
                     pending,
                     queueSize: () => messageQueue.size(),
@@ -1068,23 +1128,11 @@ export async function runCodex(opts: {
         logger.debug('[codex]: happyServer.stop');
         happyServer.stop();
 
-        // Clean up ink UI
-        if (process.stdin.isTTY) {
-            logger.debug('[codex]: setRawMode(false)');
-            try { process.stdin.setRawMode(false); } catch { }
-        }
-        // Stop reading from stdin so the process can exit
-        if (hasTTY) {
-            logger.debug('[codex]: stdin.pause()');
-            try { process.stdin.pause(); } catch { }
-        }
+        terminalChat?.stop();
+        try { process.stdin.pause(); } catch { }
         // Clear periodic keep-alive to avoid keeping event loop alive
         logger.debug('[codex]: clearInterval(keepAlive)');
         clearInterval(keepAliveInterval);
-        if (inkInstance) {
-            logger.debug('[codex]: inkInstance.unmount()');
-            inkInstance.unmount();
-        }
         messageBuffer.clear();
 
         logActiveHandles('cleanup-end');

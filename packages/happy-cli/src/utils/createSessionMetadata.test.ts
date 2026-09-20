@@ -84,6 +84,26 @@ describe('createSessionMetadata', () => {
         expect(metadata.dangerouslySkipPermissions).toBe(true);
     });
 
+    it('sets a trimmed session display name when provided', () => {
+        const { metadata } = createSessionMetadata({
+            flavor: 'traex',
+            machineId: 'machine-name',
+            name: '  Release cleanup  ',
+        });
+
+        expect(metadata.name).toBe('Release cleanup');
+    });
+
+    it('omits a blank session display name', () => {
+        const { metadata } = createSessionMetadata({
+            flavor: 'traex',
+            machineId: 'machine-name',
+            name: '   ',
+        });
+
+        expect(metadata.name).toBeUndefined();
+    });
+
     it('sets fork lineage metadata when provided', () => {
         const { metadata } = createSessionMetadata({
             flavor: 'codex',

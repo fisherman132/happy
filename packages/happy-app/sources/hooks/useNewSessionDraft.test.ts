@@ -4,7 +4,7 @@ type Draft = {
     input: string;
     selectedMachineId: string | null;
     selectedPath: string | null;
-    agentType: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'rig';
+    agentType: 'claude' | 'codex' | 'gemini' | 'openclaw' | 'agy' | 'kimi' | 'traex' | 'rig';
     permissionMode: string | null;
     modelMode: string | null;
     effortLevel: string | null;
@@ -58,7 +58,7 @@ describe('useNewSessionDraft', () => {
         expect(useNewSessionDraft.getState().agentType).toBe('claude');
     });
 
-    it.each(['claude', 'codex', 'rig'] as const)('preserves the saved %s selection', async (agentType) => {
+    it.each(['claude', 'codex', 'kimi', 'traex', 'rig'] as const)('preserves the saved %s selection', async (agentType) => {
         mockPersistence.draft = persistedDraft({ agentType });
         const { useNewSessionDraft } = await import('./useNewSessionDraft');
         expect(useNewSessionDraft.getState().agentType).toBe(agentType);

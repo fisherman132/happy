@@ -173,4 +173,16 @@ export interface TransportHandler {
    * @returns Timeout in milliseconds (default: 500)
    */
   getIdleTimeout?(): number;
+
+  /**
+   * Classify an agent_message_chunk whose text starts with a bold line.
+   *
+   * Gemini streams some of its thought summaries as bold-led message chunks;
+   * it opts in here so they render as thinking. For every other agent a bold
+   * header is ordinary answer content — treating it as thinking hides real
+   * output behind the app's collapsed thinking blocks.
+   *
+   * @returns true when the chunk should be treated as thinking
+   */
+  isThinkingMessageChunk?(text: string): boolean;
 }

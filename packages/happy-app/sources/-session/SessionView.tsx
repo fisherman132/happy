@@ -10,6 +10,7 @@ import {
     getAvailableModels,
     getAvailablePermissionModes,
     getEffortLevelsForModel,
+    isAcpCatalogDrivenFlavor,
     getRigCurrentModelOptionKey,
     resolveCurrentOption,
     EffortLevel,
@@ -715,6 +716,7 @@ export function SessionViewLoaded({
     const shouldShowCliWarning = isCliOutdated && !isAcknowledged;
     const flavor = session.metadata?.flavor;
     const isRig = isRigMetadata(session.metadata);
+    const isAcpCatalogDriven = isAcpCatalogDrivenFlavor(flavor);
     const agentDefaultOverrides = useSetting('agentDefaultOverrides');
     const effectiveAgentDefaults = React.useMemo(() => (
         resolveAgentDefaultConfig(agentDefaultOverrides, flavor, cliVersion)
@@ -724,7 +726,9 @@ export function SessionViewLoaded({
             flavor,
             session.metadata,
             t,
-            session.modelMode ?? (isRig ? null : effectiveAgentDefaults.modelMode),
+            session.modelMode
+                ?? (flavor === 'codex' && !isRig ? session.metadata?.currentModelCode : null)
+                ?? effectiveAgentDefaults.modelMode,
         )
     ), [flavor, session.metadata, session.modelMode, effectiveAgentDefaults.modelMode, isRig]);
     const availableModes = React.useMemo(() => (
@@ -738,20 +742,32 @@ export function SessionViewLoaded({
                 session.metadata?.currentOperatingModeCode,
                 session.metadata?.permissionMode,
                 session.metadata?.session?.permissionMode,
+            ] : isAcpCatalogDriven ? [
+                session.metadata?.currentOperatingModeCode,
+                effectiveAgentDefaults.permissionMode,
             ] : [
                 effectiveAgentDefaults.permissionMode,
                 session.metadata?.currentOperatingModeCode,
             ]),
         ])
-    ), [availableModes, session.permissionMode, effectiveAgentDefaults.permissionMode, session.metadata?.currentOperatingModeCode, session.metadata?.permissionMode, session.metadata?.session?.permissionMode, isRig]);
+    ), [availableModes, session.permissionMode, effectiveAgentDefaults.permissionMode, session.metadata?.currentOperatingModeCode, session.metadata?.permissionMode, session.metadata?.session?.permissionMode, isRig, isAcpCatalogDriven]);
 
     const modelMode = React.useMemo<ModelMode | null>(() => (
         resolveCurrentOption(availableModels, [
             session.modelMode,
-            isRig ? getRigCurrentModelOptionKey(session.metadata) : effectiveAgentDefaults.modelMode,
-            isRig ? undefined : session.metadata?.currentModelCode,
+            isRig
+                ? getRigCurrentModelOptionKey(session.metadata)
+                : isAcpCatalogDriven
+                    ? session.metadata?.currentModelCode
+                    : flavor === 'codex'
+                        ? session.metadata?.currentModelCode
+                        : effectiveAgentDefaults.modelMode,
+            !isRig && !isAcpCatalogDriven ? (
+                flavor === 'codex' ? effectiveAgentDefaults.modelMode : session.metadata?.currentModelCode
+            ) : undefined,
+            !isRig && isAcpCatalogDriven ? effectiveAgentDefaults.modelMode : undefined,
         ])
-    ), [availableModels, session.modelMode, effectiveAgentDefaults.modelMode, session.metadata, isRig]);
+    ), [availableModels, session.modelMode, effectiveAgentDefaults.modelMode, session.metadata, isRig, isAcpCatalogDriven]);
 
     // Effort level state
     const modelKey = modelMode?.key ?? 'default';
@@ -761,9 +777,14 @@ export function SessionViewLoaded({
     const effortLevel = React.useMemo<EffortLevel | null>(() => (
         resolveCurrentOption(availableEffortLevels, [
             session.effortLevel,
-            isRig ? getRigReasoningSelection(session.metadata, modelKey) : effectiveAgentDefaults.effortLevel,
+            isRig
+                ? getRigReasoningSelection(session.metadata, modelKey)
+                : isAcpCatalogDriven
+                    ? session.metadata?.currentThoughtLevelCode
+                    : effectiveAgentDefaults.effortLevel,
+            !isRig && isAcpCatalogDriven ? effectiveAgentDefaults.effortLevel : undefined,
         ])
-    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel, session.metadata, modelKey, isRig]);
+    ), [availableEffortLevels, session.effortLevel, effectiveAgentDefaults.effortLevel, session.metadata, modelKey, isRig, isAcpCatalogDriven]);
 
     const sessionStatus = useSessionStatus(session);
     const sessionUsage = useSessionUsage(sessionId);

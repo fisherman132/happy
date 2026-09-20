@@ -83,6 +83,58 @@ describe('AgyBackend', () => {
     expect(messages.at(-1)).toMatchObject({ type: 'status', status: 'idle' });
   });
 
+  it('strips ANSI and control characters from streamed stdout', async () => {
+    const { child, stdout } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      spawnFn,
+      resolveConversationId: () => null,
+    });
+
+    const messages: AgentMessage[] = [];
+    backend.onMessage((m) => messages.push(m));
+
+    await backend.startSession();
+    const turn = backend.sendPrompt('/work', 'hi');
+
+    stdout.emit('data', '\u001b[32mcolored text\u001b[0m\n');
+    stdout.emit('data', '\u001b]0;window title\u0007plain\u0008\u0007\n');
+    child.emit('close', 0);
+    await turn;
+
+    expect(messages.filter((m) => m.type === 'model-output')).toEqual([
+      { type: 'model-output', textDelta: 'colored text\n' },
+      { type: 'model-output', textDelta: 'plain\n' },
+    ]);
+  });
+
+  it('resumes a pinned conversation on the first turn when resumeConversationId is set', async () => {
+    const { child } = makeFakeChild();
+    const spawnFn = vi.fn(() => child) as unknown as SpawnFn;
+    const backend = new AgyBackend({
+      cwd: '/work',
+      permissionMode: 'default',
+      resumeConversationId: 'agy-conv-42',
+      spawnFn,
+      resolveConversationId: () => null,
+    });
+
+    expect(backend.getConversationId()).toBe('agy-conv-42');
+
+    const turn = backend.sendPrompt('/work', 'continue this');
+    child.emit('close', 0);
+    await turn;
+
+    const args = (spawnFn as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
+    const conversationIndex = args.indexOf('--conversation');
+    expect(args[conversationIndex + 1]).toBe('agy-conv-42');
+    // The pinned id survives and is not re-read from the cwd cache.
+    expect(backend.getConversationId()).toBe('agy-conv-42');
+  });
+
   it('emits an error status and rejects on non-zero exit', async () => {
     const { child, stderr } = makeFakeChild();
     const spawnFn = vi.fn(() => child) as unknown as SpawnFn;

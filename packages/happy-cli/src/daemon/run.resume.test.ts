@@ -27,7 +27,18 @@ vi.mock('@/configuration', () => ({ configuration: { serverUrl: 'http://test.inv
 vi.mock('@/ui/auth', () => ({ authAndSetupMachineIfNeeded: async () => ({ credentials: { token: 'test-token' }, machineId: 'machine-1' }) }));
 vi.mock('@/ui/doctor', () => ({ getEnvironmentInfo: () => ({}) }));
 vi.mock('@/utils/caffeinate', () => ({ startCaffeinate: () => false, stopCaffeinate: vi.fn() }));
-vi.mock('@/utils/detectCLI', () => ({ detectCLIAvailability: () => ({}) }));
+vi.mock('@/utils/detectCLI', () => ({
+  detectCLIAvailability: () => ({
+    claude: false,
+    codex: false,
+    gemini: false,
+    openclaw: false,
+    agy: false,
+    kimi: false,
+    traex: false,
+    detectedAt: 1,
+  }),
+}));
 vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawn }));
 vi.mock('@/utils/tmux', () => ({ isTmuxAvailable: async () => false }));
 vi.mock('@/resume/localHappyAgentAuth', () => ({ detectResumeSupport: () => ({}), hasLocalHappyAgentAuth: () => false }));
@@ -266,6 +277,157 @@ describe('daemon resume fallback', () => {
       { type: 'success', sessionId: 'one' }, { type: 'success', sessionId: 'two' },
     ]);
     expect(mocks.spawn.mock.calls.length).toBe(2);
+  });
+
+  it('spawns Kimi sessions through the first-class happy subcommand', async () => {
+    await boot();
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('kimi-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'kimi',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'kimi' }))
+      .toEqual({ type: 'success', sessionId: 'kimi-session' });
+    expect(mocks.spawn.mock.calls[0][0]).toEqual([
+      'kimi',
+      '--happy-starting-mode', 'remote',
+      '--started-by', 'daemon',
+    ]);
+  });
+
+  it('spawns TraeX sessions through the first-class happy subcommand', async () => {
+    await boot();
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('traex-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'traex',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'traex' }))
+      .toEqual({ type: 'success', sessionId: 'traex-session' });
+    expect(mocks.spawn.mock.calls[0][0]).toEqual([
+      'traex',
+      '--happy-starting-mode', 'remote',
+      '--started-by', 'daemon',
+    ]);
+  });
+
+  it('resumes Kimi sessions through its ACP session id without Claude/Codex mode args', async () => {
+    await boot();
+    const kimiFallback = {
+      ...fallback,
+      metadata: {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'kimi',
+        kimiSessionId: 'kimi-acp-old',
+      },
+    };
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('kimi-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'kimi',
+        kimiSessionId: 'kimi-acp-old',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.resumeSession('kimi-session', {
+      fallback: kimiFallback,
+      model: 'kimi-k2,thinking',
+      permissionMode: 'default',
+    })).toEqual({ type: 'success', sessionId: 'kimi-session' });
+    expect(mocks.spawn.mock.calls[0][0]).toEqual([
+      'kimi',
+      '--resume',
+      'kimi-acp-old',
+      '--started-by',
+      'daemon',
+    ]);
+  });
+
+  it('resumes TraeX sessions through its ACP session id without Claude/Codex mode args', async () => {
+    await boot();
+    const traexFallback = {
+      ...fallback,
+      metadata: {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'traex',
+        traexSessionId: 'traex-acp-old',
+      },
+    };
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('traex-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'traex',
+        traexSessionId: 'traex-acp-old',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.resumeSession('traex-session', {
+      fallback: traexFallback,
+      model: 'gpt-5.6-sol',
+      permissionMode: 'yolo',
+      effort: 'high',
+    })).toEqual({ type: 'success', sessionId: 'traex-session' });
+    expect(mocks.spawn.mock.calls[0][0]).toEqual([
+      'traex',
+      '--resume',
+      'traex-acp-old',
+      '--started-by',
+      'daemon',
+    ]);
+  });
+
+  it('does not inject a Claude token when spawning Kimi', async () => {
+    await boot();
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('kimi-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'kimi',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'kimi', token: 'provider-token' }))
+      .toEqual({ type: 'success', sessionId: 'kimi-session' });
+    expect(mocks.spawn.mock.calls[0][1].env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(mocks.spawn.mock.calls[0][1].env.CODEX_HOME).toBeUndefined();
+  });
+
+  it('does not inject a Claude token when spawning TraeX', async () => {
+    await boot();
+    mocks.spawn.mockImplementation(() => {
+      queueMicrotask(() => mocks.webhook('traex-session', {
+        path: '/project',
+        machineId: 'machine-1',
+        flavor: 'traex',
+        hostPid: 12345,
+      }));
+      return { pid: 12345, on: vi.fn() };
+    });
+
+    expect(await mocks.handlers.spawnSession({ directory: '/project', agent: 'traex', token: 'provider-token' }))
+      .toEqual({ type: 'success', sessionId: 'traex-session' });
+    expect(mocks.spawn.mock.calls[0][1].env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(mocks.spawn.mock.calls[0][1].env.CODEX_HOME).toBeUndefined();
   });
 
   it('cancels a resume stopped before directory validation completes', async () => {

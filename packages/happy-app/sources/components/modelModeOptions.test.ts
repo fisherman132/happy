@@ -7,8 +7,10 @@ import {
     getAgyPermissionModes,
     getAvailableModels,
     getAvailablePermissionModes,
+    getHardcodedPermissionModes,
     getCodexModelModes,
     getCodexPermissionModes,
+    getKimiModelModes,
     getClaudeModelModes,
     getClaudePermissionModes,
     getGeminiPermissionModes,
@@ -87,6 +89,7 @@ describe('modelModeOptions', () => {
         expect(named(getCodexPermissionModes(translate))).toBe('Default');
         expect(named(getAgyPermissionModes(translate))).toBe('Default');
         expect(named(getGeminiPermissionModes(translate))).toBe('Default');
+        expect(named(getHardcodedPermissionModes('kimi', translate))).toBe('Default');
     });
 
     // The hardcoded catalogs are written in order rather than sorted, so this
@@ -207,6 +210,12 @@ describe('modelModeOptions', () => {
         expect(getDefaultPermissionModeKey('agy')).toBe('default');
         expect(getDefaultModelKey('agy')).toBe('Gemini 3.8 Flash');
         expect(getDefaultEffortKey('agy')).toBe('medium');
+        expect(getDefaultPermissionModeKey('kimi')).toBe('default');
+        expect(getDefaultModelKey('kimi')).toBe('default');
+        expect(getDefaultEffortKey('kimi')).toBeNull();
+        expect(getDefaultPermissionModeKey('traex')).toBe('default');
+        expect(getDefaultModelKey('traex')).toBe('default');
+        expect(getDefaultEffortKey('traex')).toBeNull();
     });
 
     it('prefers metadata models over hardcoded fallbacks', () => {
@@ -232,6 +241,14 @@ describe('modelModeOptions', () => {
             { key: 'default', name: 'default model', description: null },
             { key: 'gpt-5.4', name: 'gpt-5.4', description: 'Latest' },
         ]);
+    });
+
+    it('keeps a Codex model selected from the terminal visible on the phone', () => {
+        const models = getAvailableModels('codex', {
+            currentModelCode: 'gpt-5.6-terra',
+        } as any, translate, 'gpt-5.6-terra');
+
+        expect(resolveCurrentOption(models, ['gpt-5.6-terra'])?.name).toBe('GPT-5.6 Terra');
     });
 
     it('keeps codex permission modes hardcoded even when metadata modes exist', () => {
@@ -289,6 +306,80 @@ describe('modelModeOptions', () => {
             'Gemini 3.6 Flash (High)',
         ]);
         expect(models.at(-1)?.description).toBe('saved model');
+    });
+
+    it('uses ACP-published Kimi models and modes before hardcoded fallbacks', () => {
+        const metadata = {
+            models: [
+                {
+                    code: 'kimi-k2-thinking',
+                    value: 'Kimi K2 Thinking',
+                    description: 'from acp',
+                    thinkingLevels: ['low', 'high'],
+                    defaultThinkingLevel: 'high',
+                },
+            ],
+            operatingModes: [
+                { code: 'ask', value: 'Ask', description: 'Ask before tools' },
+                { code: 'auto', value: 'Auto', description: 'Decide when to ask' },
+            ],
+        } as any;
+
+        expect(getAvailableModels('kimi', metadata, translate)).toEqual([
+            {
+                key: 'kimi-k2-thinking',
+                name: 'Kimi K2 Thinking',
+                description: 'from acp',
+                thinkingLevels: ['low', 'high'],
+                defaultThinkingLevel: 'high',
+            },
+        ]);
+        expect(getAvailablePermissionModes('kimi', metadata, translate)).toEqual([
+            { key: 'auto', name: 'Auto', description: 'Decide when to ask' },
+            { key: 'ask', name: 'Ask', description: 'Ask before tools' },
+        ]);
+        expect(getEffortLevelsForModel('kimi', 'kimi-k2-thinking', metadata).map((level) => level.key))
+            .toEqual(['low', 'high']);
+    });
+
+    it('uses the built-in Kimi catalog before ACP reports a catalog', () => {
+        const models = getAvailableModels('kimi', null, translate, 'kimi-custom-model');
+
+        expect(models.map((model) => model.key)).toEqual(getKimiModelModes().map((model) => model.key));
+    });
+
+    it('uses ACP-published TraeX models and modes before hardcoded fallbacks', () => {
+        const metadata = {
+            models: [
+                {
+                    code: 'gpt-5.6-sol',
+                    value: 'GPT-5.6 Sol',
+                    description: 'from traex acp',
+                    thinkingLevels: ['low', 'high'],
+                    defaultThinkingLevel: 'high',
+                },
+            ],
+            operatingModes: [
+                { code: 'ask', value: 'Ask', description: 'Ask before tools' },
+                { code: 'yolo', value: 'Yolo', description: 'Skip prompts' },
+            ],
+        } as any;
+
+        expect(getAvailableModels('traex', metadata, translate)).toEqual([
+            {
+                key: 'gpt-5.6-sol',
+                name: 'GPT-5.6 Sol',
+                description: 'from traex acp',
+                thinkingLevels: ['low', 'high'],
+                defaultThinkingLevel: 'high',
+            },
+        ]);
+        expect(getAvailablePermissionModes('traex', metadata, translate)).toEqual([
+            { key: 'yolo', name: 'Yolo', description: 'Skip prompts' },
+            { key: 'ask', name: 'Ask', description: 'Ask before tools' },
+        ]);
+        expect(getEffortLevelsForModel('traex', 'gpt-5.6-sol', metadata).map((level) => level.key))
+            .toEqual(['low', 'high']);
     });
 
     it('resolves the first matching preferred key', () => {

@@ -1,7 +1,7 @@
 {
   "name": "happy",
   "version": "1.2.4",
-  "description": "Mobile and Web client for Claude Code and Codex",
+  "description": "Mobile and Web client for Claude Code, Codex, Kimi and TraeX",
   "author": "Kirill Dubovitskiy",
   "license": "MIT",
   "type": "module",

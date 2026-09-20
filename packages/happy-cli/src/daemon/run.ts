@@ -43,6 +43,16 @@ function shellescape(s: string): string {
     return "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
+const DAEMON_SPAWN_AGENTS = ['claude', 'codex', 'gemini', 'openclaw', 'agy', 'kimi', 'traex'] as const;
+type DaemonSpawnAgent = typeof DAEMON_SPAWN_AGENTS[number];
+
+function resolveDaemonSpawnAgent(agent: SpawnSessionOptions['agent']): DaemonSpawnAgent | null {
+  if (agent === undefined) {
+    return 'claude';
+  }
+  return (DAEMON_SPAWN_AGENTS as readonly string[]).includes(agent) ? agent : null;
+}
+
 // Prepare initial metadata
 // Suffix host with `-dev` for the HAPPY_VARIANT=dev variant so the dev daemon
 // is visually distinct from the stable one in the machine list (they otherwise
@@ -342,7 +352,7 @@ export async function startDaemon(): Promise<void> {
 
             // Set the environment variable for Codex
             authEnv.CODEX_HOME = codexHomeDir.name;
-          } else { // Assuming claude
+          } else if (options.agent === undefined || options.agent === 'claude') {
             authEnv.CLAUDE_CODE_OAUTH_TOKEN = options.token;
           }
         }
@@ -435,8 +445,13 @@ export async function startDaemon(): Promise<void> {
 
           // Construct command for the CLI
           const cliPath = join(projectPath(), 'dist', 'index.mjs');
-          // Determine agent command - support claude, codex, gemini, openclaw, and agy
-          const agent = options.agent === 'gemini' ? 'gemini' : (options.agent === 'codex' ? 'codex' : (options.agent === 'openclaw' ? 'openclaw' : (options.agent === 'agy' ? 'agy' : 'claude')));
+          const agent = resolveDaemonSpawnAgent(options.agent);
+          if (!agent) {
+            return {
+              type: 'error',
+              errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
+            };
+          }
           const resumeId = agent === 'claude'
             ? options.resumeClaudeSessionId
             : (agent === 'codex' ? options.resumeCodexThreadId : undefined);
@@ -531,30 +546,12 @@ export async function startDaemon(): Promise<void> {
         if (!useTmux) {
           logger.debug(`[DAEMON RUN] Using regular process spawning`);
 
-          // Construct arguments for the CLI - support claude, codex, and gemini
-          let agentCommand: string;
-          switch (options.agent) {
-            case 'claude':
-            case undefined:
-              agentCommand = 'claude';
-              break;
-            case 'codex':
-              agentCommand = 'codex';
-              break;
-            case 'gemini':
-              agentCommand = 'gemini';
-              break;
-            case 'openclaw':
-              agentCommand = 'openclaw';
-              break;
-            case 'agy':
-              agentCommand = 'agy';
-              break;
-            default:
-              return {
-                type: 'error',
-                errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
-              };
+          const agentCommand = resolveDaemonSpawnAgent(options.agent);
+          if (!agentCommand) {
+            return {
+              type: 'error',
+              errorMessage: `Unsupported agent type: '${options.agent}'. Please update your CLI to the latest version.`
+            };
           }
           const args = [
             agentCommand,
@@ -800,6 +797,10 @@ export async function startDaemon(): Promise<void> {
             metadata = { ...metadata, claudeSessionId: fallback.metadata.claudeSessionId };
           } else if (flavor === 'codex' && !metadata.codexThreadId && fallback.metadata.codexThreadId) {
             metadata = { ...metadata, codexThreadId: fallback.metadata.codexThreadId };
+          } else if (flavor === 'kimi' && !metadata.kimiSessionId && fallback.metadata.kimiSessionId) {
+            metadata = { ...metadata, kimiSessionId: fallback.metadata.kimiSessionId };
+          } else if (flavor === 'traex' && !metadata.traexSessionId && fallback.metadata.traexSessionId) {
+            metadata = { ...metadata, traexSessionId: fallback.metadata.traexSessionId };
           }
         }
 
@@ -812,7 +813,9 @@ export async function startDaemon(): Promise<void> {
         // The fetch is best effort: it reads the server's 150 most recent
         // sessions, and an older session simply keeps what the client sent.
         const needsFetch = (!metadata.claudeSessionId && (!metadata.flavor || metadata.flavor === 'claude'))
-          || (!metadata.codexThreadId && metadata.flavor === 'codex');
+          || (!metadata.codexThreadId && metadata.flavor === 'codex')
+          || (!metadata.kimiSessionId && metadata.flavor === 'kimi')
+          || (!metadata.traexSessionId && metadata.flavor === 'traex');
         if (needsFetch) {
           logger.debug(`[DAEMON RUN] Session ${happySessionId} has no agent session ID in the metadata at hand, fetching from server`);
           const serverMetadata = await fetchServerSessionMetadata(happySessionId, encryption.encryptionKey, encryption.encryptionVariant);
@@ -829,12 +832,17 @@ export async function startDaemon(): Promise<void> {
           { startedBy: 'daemon', claudeStartingMode: 'remote' },
         );
 
-        if (options?.model) {
+        const flavorUsesAcpConfig = metadata.flavor === 'kimi' || metadata.flavor === 'traex';
+
+        if (options?.model && !flavorUsesAcpConfig) {
           launch.args.push('--model', options.model);
         }
         const resumePermissionMode = options?.permissionMode;
-        if (shouldForwardDaemonPermissionMode(metadata.flavor ?? 'claude', resumePermissionMode)) {
+        if (!flavorUsesAcpConfig && shouldForwardDaemonPermissionMode(metadata.flavor ?? 'claude', resumePermissionMode)) {
           launch.args.push('--permission-mode', resumePermissionMode);
+        }
+        if (options?.effort && !flavorUsesAcpConfig) {
+          launch.args.push('--effort', options.effort);
         }
 
         await fs.access(launch.cwd);

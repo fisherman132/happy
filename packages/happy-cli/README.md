@@ -14,16 +14,15 @@ npm install -g happy
 
 ## Usage
 
-### Claude Code (default)
+### Claude Code
 
 ```bash
 happy
-# or
 happy claude
 ```
 
 This will:
-1. Start a Claude Code session
+1. Start a Claude Code session (`happy` starts local-first; `happy claude` starts Happy remote chat)
 2. Display a QR code to connect from your mobile device or browser
 3. Allow real-time session control — all communication is end-to-end encrypted
 4. Start new sessions directly from your phone or web while your computer is online
@@ -32,6 +31,8 @@ This will:
 
 ```
 happy codex
+happy kimi       # Kimi CLI
+happy traex      # TraeX CLI
 happy agy        # Antigravity CLI (Gemini's successor)
 happy gemini     # deprecated — use `happy agy`
 happy openclaw
@@ -109,6 +110,8 @@ happy connect status
 |---------|-------------|
 | `happy` | Start Claude Code session (default) |
 | `happy codex` | Start Codex mode |
+| `happy kimi` | Start Kimi CLI session |
+| `happy traex` | Start TraeX CLI session |
 | `happy agy` | Start agy (Antigravity CLI) session |
 | `happy gemini` | Start Gemini CLI session (**deprecated** — use `happy agy`) |
 | `happy openclaw` | Start OpenClaw session |
@@ -155,6 +158,8 @@ yarn workspace happy cli --help
 - Node.js >= 20.0.0
 - For Claude: `claude` CLI installed & logged in
 - For Codex: `codex` CLI installed & logged in
+- For Kimi: `kimi` CLI installed & logged in
+- For TraeX: `traex` CLI installed & logged in
 - For agy: install the Antigravity CLI (`agy`) and log in
 - For Gemini (**deprecated** — use agy): `npm install -g @google/gemini-cli` + `happy connect gemini`
 

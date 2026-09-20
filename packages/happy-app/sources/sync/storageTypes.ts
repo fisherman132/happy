@@ -147,6 +147,8 @@ export const MetadataSchema = z.object({
     machineId: z.string().optional(),
     claudeSessionId: z.string().optional(), // Claude Code session ID
     codexThreadId: z.string().optional(), // Codex app-server thread ID
+    kimiSessionId: z.string().optional(), // Kimi ACP session ID
+    traexSessionId: z.string().optional(), // TraeX ACP session ID
     tools: z.array(z.string()).optional(),
     slashCommands: z.array(z.string()).optional(),
     mcpServers: z.array(z.object({ name: z.string(), status: z.string() })).optional(),
@@ -468,6 +470,8 @@ export const MachineMetadataSchema = z.object({
         gemini: z.boolean(),
         openclaw: z.boolean(),
         agy: z.boolean().optional(), // optional: older CLIs don't report agy
+        kimi: z.boolean().optional(), // optional: older CLIs don't report kimi
+        traex: z.boolean().optional(), // optional: older CLIs don't report traex
         rig: z.boolean().optional(), // Rig runs its own Happy-connected daemon
         detectedAt: z.number(),
     }).optional(),

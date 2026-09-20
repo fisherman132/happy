@@ -47,7 +47,7 @@ export type ACPMessageData =
     // Usage/metrics
     | { type: 'token_count';[key: string]: unknown };
 
-export type ACPProvider = 'gemini' | 'codex' | 'claude' | 'opencode';
+export type ACPProvider = 'gemini' | 'codex' | 'claude' | 'opencode' | 'kimi' | 'traex';
 
 type V3SessionMessage = {
     id: string;
@@ -195,6 +195,8 @@ export class ApiSessionClient extends EventEmitter {
     private socket: Socket<ServerToClientEvents, ClientToServerEvents>;
     private pendingMessages: UserMessage[] = [];
     private pendingMessageCallback: ((message: UserMessage) => void) | null = null;
+    private historyMessageCallback: ((message: unknown) => void) | null = null;
+    private pendingHistoryMessages: unknown[] = [];
     private pendingFileEvents: FileEventMessage[] = [];
     private pendingFileEventCallback: ((data: FileEventMessage) => void) | null = null;
     private blobKey: Uint8Array | null = null;
@@ -391,6 +393,13 @@ export class ApiSessionClient extends EventEmitter {
         this.pendingMessageCallback = callback;
         while (this.pendingMessages.length > 0) {
             callback(this.pendingMessages.shift()!);
+        }
+    }
+
+    onHistoryMessage(callback: (data: unknown) => void) {
+        this.historyMessageCallback = callback;
+        while (this.pendingHistoryMessages.length > 0) {
+            callback(this.pendingHistoryMessages.shift()!);
         }
     }
 
@@ -624,14 +633,20 @@ export class ApiSessionClient extends EventEmitter {
                     maxSeq = message.seq;
                 }
 
-                if (skipRouting) continue;
-
                 if (message.content?.t !== 'encrypted') {
                     continue;
                 }
 
                 try {
                     const body = decrypt(this.encryptionKey, this.encryptionVariant, decodeBase64(message.content.c));
+                    if (skipRouting) {
+                        if (this.historyMessageCallback) {
+                            this.historyMessageCallback(body);
+                        } else {
+                            this.pendingHistoryMessages.push(body);
+                        }
+                        continue;
+                    }
                     this.routeIncomingMessage(body);
                 } catch (error) {
                     logger.debug('[API] Failed to decrypt fetched message', {
@@ -828,7 +843,7 @@ export class ApiSessionClient extends EventEmitter {
      * @param provider - The agent provider sending the message (e.g., 'gemini', 'codex', 'claude')
      * @param body - The message payload (type: 'message' | 'reasoning' | 'tool-call' | 'tool-result')
      */
-    sendAgentMessage(provider: 'gemini' | 'codex' | 'claude' | 'opencode' | 'openclaw', body: ACPMessageData) {
+    sendAgentMessage(provider: 'gemini' | 'codex' | 'claude' | 'opencode' | 'openclaw' | 'kimi' | 'traex', body: ACPMessageData) {
         let content = {
             role: 'agent',
             content: {

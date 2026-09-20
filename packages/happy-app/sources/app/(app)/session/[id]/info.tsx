@@ -12,7 +12,7 @@ import { getSessionName, useSessionStatus, formatOSPlatform, formatPathRelativeT
 import { resolveSessionGitPresentation } from '@/utils/sessionGitPresentation';
 import * as Clipboard from 'expo-clipboard';
 import { Modal } from '@/modal';
-import { sessionArchive, sessionKill, sessionDelete } from '@/sync/ops';
+import { sessionArchive, sessionKill, sessionDelete, sessionSetName } from '@/sync/ops';
 import { maybeCleanupWorktree } from '@/hooks/useWorktreeCleanup';
 import { useUnistyles } from 'react-native-unistyles';
 import { t } from '@/text';
@@ -25,6 +25,7 @@ import { copySessionMetadataToClipboard, copySessionMetadataAndLogsToClipboard }
 import { HappyError } from '@/utils/errors';
 import { getRigIdentity, isRigMetadata } from '@/sync/rig';
 import { MOBILE_GLASS_HEADER_HEIGHT } from '@/components/navigation/headerMetrics';
+import { getHarnessName } from '@/utils/harnessCatalog';
 
 function formatSandboxMetadata(sandbox: unknown, homeDir?: string): string {
     if (sandbox === null || sandbox === undefined) {
@@ -189,6 +190,22 @@ function SessionInfoContent({ session }: { session: Session }) {
         );
     }, [performDelete]);
 
+    const handleRenameSession = useCallback(async () => {
+        const value = await Modal.prompt(
+            t('sessionInfo.sessionName'),
+            t('sessionInfo.sessionNamePrompt'),
+            {
+                defaultValue: session.metadata?.name ?? getSessionName(session),
+                placeholder: t('sessionInfo.sessionNamePlaceholder'),
+                confirmText: t('common.save'),
+            },
+        );
+        if (value === null || value === undefined) {
+            return;
+        }
+        sessionSetName(session.id, value);
+    }, [session]);
+
     const formatDate = useCallback((timestamp: number) => {
         return new Date(timestamp).toLocaleString();
     }, []);
@@ -299,6 +316,12 @@ function SessionInfoContent({ session }: { session: Session }) {
                 {/* Session Details */}
                 <ItemGroup>
                     <Item
+                        title={t('sessionInfo.sessionName')}
+                        subtitle={session.metadata?.name?.trim() ? session.metadata.name.trim() : t('sessionInfo.sessionNameDefault')}
+                        icon={<Ionicons name="create-outline" size={29} color="#007AFF" />}
+                        onPress={handleRenameSession}
+                    />
+                    <Item
                         title={t('sessionInfo.happySessionId')}
                         subtitle={`${session.id.substring(0, 8)}...${session.id.substring(session.id.length - 8)}`}
                         icon={<Ionicons name="finger-print-outline" size={29} color="#007AFF" />}
@@ -330,6 +353,36 @@ function SessionInfoContent({ session }: { session: Session }) {
                                     Modal.alert(t('common.success'), t('sessionInfo.codexThreadIdCopied'));
                                 } catch (error) {
                                     Modal.alert(t('common.error'), t('sessionInfo.failedToCopyCodexThreadId'));
+                                }
+                            }}
+                        />
+                    )}
+                    {session.metadata?.kimiSessionId && (
+                        <Item
+                            title={t('sessionInfo.kimiSessionId')}
+                            subtitle={`${session.metadata.kimiSessionId.substring(0, 8)}...${session.metadata.kimiSessionId.substring(session.metadata.kimiSessionId.length - 8)}`}
+                            icon={<Ionicons name="moon-outline" size={29} color="#007AFF" />}
+                            onPress={async () => {
+                                try {
+                                    await Clipboard.setStringAsync(session.metadata!.kimiSessionId!);
+                                    Modal.alert(t('common.success'), t('sessionInfo.kimiSessionIdCopied'));
+                                } catch (error) {
+                                    Modal.alert(t('common.error'), t('sessionInfo.failedToCopyKimiSessionId'));
+                                }
+                            }}
+                        />
+                    )}
+                    {session.metadata?.traexSessionId && (
+                        <Item
+                            title={t('sessionInfo.traexSessionId')}
+                            subtitle={`${session.metadata.traexSessionId.substring(0, 8)}...${session.metadata.traexSessionId.substring(session.metadata.traexSessionId.length - 8)}`}
+                            icon={<Ionicons name="code-slash-outline" size={29} color="#007AFF" />}
+                            onPress={async () => {
+                                try {
+                                    await Clipboard.setStringAsync(session.metadata!.traexSessionId!);
+                                    Modal.alert(t('common.success'), t('sessionInfo.traexSessionIdCopied'));
+                                } catch (error) {
+                                    Modal.alert(t('common.error'), t('sessionInfo.failedToCopyTraexSessionId'));
                                 }
                             }}
                         />
@@ -418,9 +471,7 @@ function SessionInfoContent({ session }: { session: Session }) {
                                 const flavor = session.metadata.flavor || 'claude';
                                 if (flavor === 'claude') return 'Claude';
                                 if (flavor === 'gpt' || flavor === 'openai') return 'Codex';
-                                if (flavor === 'gemini') return 'Gemini';
-                                if (flavor === 'openclaw') return 'OpenClaw';
-                                return flavor;
+                                return getHarnessName(flavor);
                             })()}
                             icon={<Ionicons name="sparkles-outline" size={29} color="#5856D6" />}
                             showChevron={false}

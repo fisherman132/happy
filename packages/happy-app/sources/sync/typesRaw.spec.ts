@@ -1145,6 +1145,38 @@ describe('Zod Transform - WOLOG Content Normalization', () => {
             }
         });
 
+        it('accepts legacy ACP messages from Kimi', () => {
+            const kimiMessage = {
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'kimi',
+                    data: {
+                        type: 'message',
+                        message: 'Kimi response'
+                    }
+                }
+            };
+
+            expect(RawRecordSchema.safeParse(kimiMessage).success).toBe(true);
+        });
+
+        it('accepts legacy ACP messages from TraeX', () => {
+            const traexMessage = {
+                role: 'agent',
+                content: {
+                    type: 'acp',
+                    provider: 'traex',
+                    data: {
+                        type: 'message',
+                        message: 'TraeX response'
+                    }
+                }
+            };
+
+            expect(RawRecordSchema.safeParse(traexMessage).success).toBe(true);
+        });
+
         it('handles hypothetical hyphenated types in output path (defensive)', () => {
             // This tests the defensive nature of the transform
             // If CLI ever sends hyphenated in output path, it should work

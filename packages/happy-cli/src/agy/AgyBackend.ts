@@ -40,6 +40,20 @@ function cleanAgyErrorOutput(value: string): string {
     .slice(-MAX_AGY_ERROR_DETAIL_CHARS);
 }
 
+/**
+ * agy --print can still emit ANSI sequences (colors, OSC, cursor moves) even
+ * when piped. Downstream these strings are rendered by an Ink UI or written
+ * raw into the user's terminal, where stray escapes corrupt or crash the
+ * terminal — strip them, keeping only printable text, tabs, and newlines.
+ */
+export function sanitizeAgyText(value: string): string {
+  return value
+    // CSI sequences, OSC sequences, and other ESC-initiated sequences
+    .replace(/\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)?|[@-Z\\-_])/g, '')
+    // remaining C0 controls except tab (\t) and newline (\n)
+    .replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g, '');
+}
+
 export interface AgyBackendOptions {
   /** Working directory the agy process runs in (and the conversation cache key). */
   cwd: string;
@@ -47,6 +61,8 @@ export interface AgyBackendOptions {
   permissionMode: PermissionMode;
   /** Initial model display name; updated per turn from message meta. */
   model?: string;
+  /** Agy conversation id to resume instead of relying on the cwd cache. */
+  resumeConversationId?: string;
   /** Initial Happy effort key; used to resolve models with agy-specific variants. */
   effort?: string;
   /** Value for `--print-timeout`. Defaults to AGY_PRINT_TIMEOUT. */
@@ -86,10 +102,16 @@ export class AgyBackend implements AgentBackend {
     this.permissionMode = opts.permissionMode;
     this.model = opts.model;
     this.effort = opts.effort;
+    this.conversationId = opts.resumeConversationId ?? null;
     this.printTimeout = opts.printTimeout ?? AGY_PRINT_TIMEOUT;
     this.log = opts.log ?? (() => {});
     this.spawnFn = opts.spawnFn ?? spawn;
     this.resolveConversationId = opts.resolveConversationId ?? readAgyConversationId;
+  }
+
+  /** The pinned agy conversation id, once created or resumed (for metadata). */
+  getConversationId(): string | null {
+    return this.conversationId;
   }
 
   /** Update the permission mode applied to subsequent turns. */
@@ -162,8 +184,9 @@ export class AgyBackend implements AgentBackend {
 
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => {
-        if (chunk) {
-          this.emit({ type: 'model-output', textDelta: chunk });
+        const text = sanitizeAgyText(chunk);
+        if (text) {
+          this.emit({ type: 'model-output', textDelta: text });
         }
       });
 

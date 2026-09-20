@@ -2,20 +2,24 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Session as ApiSession } from '@/api/types';
 import type { AgentMessage } from '@/agent/core';
-import { AcpBackend, type AcpPermissionHandler } from './AcpBackend';
+import { AcpBackend, CANCELLED_BY_USER_DETAIL, type AcpPermissionHandler } from './AcpBackend';
 import { DefaultTransport } from '@/agent/transport';
 import { AcpSessionManager } from './AcpSessionManager';
-import type { SessionEnvelope } from '@slopus/happy-wire';
+import { createEnvelope, type SessionEnvelope } from '@slopus/happy-wire';
+import { startTerminalChat, type TerminalChat, type TerminalPickOption } from './terminalChat';
+import { showTerminalHistoryMessage } from '@/utils/terminalHistory';
 import { logger } from '@/ui/logger';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { Credentials, readSettings } from '@/persistence';
+import { SessionSyncGate } from '@/utils/sessionSyncGate';
 import { initialMachineMetadata } from '@/daemon/run';
 import { createSessionMetadata } from '@/utils/createSessionMetadata';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
-import { encodeBase64 } from '@/api/encryption';
+import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { projectPath } from '@/projectPath';
@@ -28,6 +32,7 @@ import {
   extractModelStateFromPayload,
   mergeAcpSessionConfigIntoMetadata,
 } from './sessionConfigMetadata';
+import { buildTraexHistoryBackfillEnvelopes } from '@/traex/historyBackfill';
 import type { SessionConfigOption, SessionModeState, SessionModelState } from '@agentclientprotocol/sdk';
 
 const TURN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -71,7 +76,12 @@ function colorizeAcpLine(kind: AcpLogKind, line: string): string {
   return `${ACP_LOG_COLORS[kind]}${line}${ACP_COLOR_RESET}`;
 }
 
+// Set while an interactive terminal chat owns the console so streamed agent
+// text without a trailing newline cannot bleed into the next log line.
+let activeTerminalChat: TerminalChat | null = null;
+
 function logAcp(kind: AcpLogKind, message: string): void {
+  activeTerminalChat?.breakLine();
   const line = `[${formatAcpTime()}] ${message}`;
   console.log(colorizeAcpLine(kind, line));
 }
@@ -269,6 +279,7 @@ function formatEnvelopeForServerLog(agentName: string, envelope: SessionEnvelope
 type AcpSwitchMode = {
   permissionMode?: string;
   model?: string | null;
+  effort?: string | null;
 };
 
 type AcpSelectableOption = {
@@ -280,6 +291,14 @@ type AcpConfigSelector = {
   configId: string;
   currentCode: string;
   options: AcpSelectableOption[];
+};
+
+type AcpConfigCategory = 'mode' | 'model' | 'thought_level';
+
+const ACP_CONFIG_CATEGORY_HINTS: Record<AcpConfigCategory, readonly string[]> = {
+  mode: ['mode', 'permission', 'permissions'],
+  model: ['model', 'models'],
+  thought_level: ['thought', 'thinking', 'effort', 'reasoning'],
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -321,23 +340,29 @@ function flattenSelectOptions(options: unknown): AcpSelectableOption[] {
 
 function extractConfigSelector(
   configOptions: SessionConfigOption[],
-  category: 'mode' | 'model',
+  category: AcpConfigCategory,
 ): AcpConfigSelector | null {
-  const optionMatchesCategory = (option: SessionConfigOption): boolean => {
-    if (option.category === category) {
-      return true;
+  const resolveOptionCategory = (option: SessionConfigOption): AcpConfigCategory | null => {
+    if (typeof option.category === 'string') {
+      return option.category === 'mode' || option.category === 'model' || option.category === 'thought_level'
+        ? option.category
+        : null;
     }
     // Some ACP providers omit category; fallback to id/name heuristics.
-    const id = normalizeComparable(option.id);
-    const name = normalizeComparable(option.name);
-    if (category === 'model') {
-      return id.includes('model') || name.includes('model');
+    const tokens = [
+      ...tokensForCategoryHeuristic(option.id),
+      ...tokensForCategoryHeuristic(option.name),
+    ];
+    for (const candidate of ['thought_level', 'model', 'mode'] as const) {
+      if (tokens.some((token) => ACP_CONFIG_CATEGORY_HINTS[candidate].includes(token))) {
+        return candidate;
+      }
     }
-    return id.includes('mode') || id.includes('permission') || name.includes('mode') || name.includes('permission');
+    return null;
   };
 
   for (const option of configOptions) {
-    if (option.type !== 'select' || !optionMatchesCategory(option)) {
+    if (option.type !== 'select' || resolveOptionCategory(option) !== category) {
       continue;
     }
     return {
@@ -351,6 +376,14 @@ function extractConfigSelector(
 
 function normalizeComparable(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function tokensForCategoryHeuristic(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
 }
 
 function resolveRequestedCode(options: AcpSelectableOption[], requested: string): string | null {
@@ -436,14 +469,32 @@ type PendingTurn = {
   timeout: NodeJS.Timeout;
 };
 
-function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'acp' {
+function resolveSessionFlavor(agentName: string): 'gemini' | 'opencode' | 'kimi' | 'traex' | 'acp' {
   if (agentName === 'gemini') {
     return 'gemini';
   }
   if (agentName === 'opencode') {
     return 'opencode';
   }
+  if (agentName === 'kimi') {
+    return 'kimi';
+  }
+  if (agentName === 'traex') {
+    return 'traex';
+  }
   return 'acp';
+}
+
+type AcpSessionIdMetadataKey = 'kimiSessionId' | 'traexSessionId';
+
+function resolveAcpSessionIdMetadataKey(agentName: string): AcpSessionIdMetadataKey | null {
+  if (agentName === 'kimi') {
+    return 'kimiSessionId';
+  }
+  if (agentName === 'traex') {
+    return 'traexSessionId';
+  }
+  return null;
 }
 
 export async function runAcp(opts: {
@@ -453,10 +504,15 @@ export async function runAcp(opts: {
   args: string[];
   startedBy?: 'daemon' | 'terminal';
   verbose?: boolean;
+  resumeAcpSessionId?: string;
+  sessionName?: string;
+  /** Start with phone sync off; /sync in the terminal chat enables it. */
+  noSync?: boolean;
 }): Promise<void> {
   const verbose = opts.verbose === true;
   const sessionTag = randomUUID();
   connectionState.setBackend(opts.agentName);
+  const syncGate = new SessionSyncGate(!opts.noSync);
 
   const api = await ApiClient.create(opts.credentials);
   const settings = await readSettings();
@@ -474,8 +530,36 @@ export async function runAcp(opts: {
     machineId: settings.machineId,
     startedBy: opts.startedBy,
     sandbox: settings.sandboxConfig,
+    name: opts.sessionName,
   });
-  const response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  const acpSessionIdMetadataKey = resolveAcpSessionIdMetadataKey(opts.agentName);
+  if (acpSessionIdMetadataKey && opts.resumeAcpSessionId) {
+    metadata[acpSessionIdMetadataKey] = opts.resumeAcpSessionId;
+  }
+  // Check for session reconnection env vars (set by daemon for resume-in-place)
+  const reconnectSessionId = process.env.HAPPY_RECONNECT_SESSION_ID;
+  const reconnectKeyBase64 = process.env.HAPPY_RECONNECT_ENCRYPTION_KEY;
+  const reconnectVariant = process.env.HAPPY_RECONNECT_ENCRYPTION_VARIANT as 'legacy' | 'dataKey' | undefined;
+  const reconnectSeq = process.env.HAPPY_RECONNECT_SEQ;
+  const reconnectMetadataVersion = process.env.HAPPY_RECONNECT_METADATA_VERSION;
+  const reconnectAgentStateVersion = process.env.HAPPY_RECONNECT_AGENT_STATE_VERSION;
+
+  let response: ApiSession | null;
+  if (reconnectSessionId && reconnectKeyBase64 && reconnectVariant) {
+    logger.debug(`[START] Reconnecting to existing session ${reconnectSessionId}`);
+    response = {
+      id: reconnectSessionId,
+      seq: parseInt(reconnectSeq || '0', 10),
+      encryptionKey: decodeBase64(reconnectKeyBase64),
+      encryptionVariant: reconnectVariant,
+      metadata,
+      metadataVersion: parseInt(reconnectMetadataVersion || '0', 10),
+      agentState: state,
+      agentStateVersion: parseInt(reconnectAgentStateVersion || '0', 10),
+    };
+  } else {
+    response = await api.getOrCreateSession({ tag: sessionTag, metadata, state });
+  }
   if (response) {
     logAcp('muted', `Happy Session ID: ${response.id}`);
   }
@@ -496,6 +580,17 @@ export async function runAcp(opts: {
     },
   });
   session = initialSession;
+
+  // On reconnect, un-archive the session and skip replaying old messages.
+  if (reconnectSessionId) {
+    session.suppressNextArchiveSignal();
+    session.skipExistingMessages();
+    session.updateMetadata((currentMetadata) => ({
+      ...currentMetadata,
+      lifecycleState: 'running',
+      archivedBy: undefined,
+    }));
+  }
 
   if (response) {
     try {
@@ -520,8 +615,10 @@ export async function runAcp(opts: {
   const messageQueue = new MessageQueue2<AcpSwitchMode>((mode) => hashObject(mode));
   let currentPermissionMode: string | undefined;
   let currentModel: string | null | undefined;
+  let currentEffort: string | null | undefined;
   let modeSelector: AcpConfigSelector | null = null;
   let modelSelector: AcpConfigSelector | null = null;
+  let thoughtLevelSelector: AcpConfigSelector | null = null;
   let legacyModes: SessionModeState | null = null;
   let legacyModels: SessionModelState | null = null;
   let sawSlashCommands = false;
@@ -541,6 +638,7 @@ export async function runAcp(opts: {
     cwd: process.cwd(),
     command: opts.command,
     args: opts.args,
+    resumeSessionId: opts.resumeAcpSessionId,
     mcpServers,
     permissionHandler,
     transportHandler: new DefaultTransport(opts.agentName),
@@ -553,6 +651,8 @@ export async function runAcp(opts: {
   let abortController = new AbortController();
   let pendingTurn: PendingTurn | null = null;
   let errorReportedForCurrentTurn = false;
+  let terminalChat: TerminalChat | null = null;
+  let keepSessionOpenOnStartupError = false;
 
   const clearPendingTurn = (error?: Error) => {
     if (!pendingTurn) {
@@ -592,7 +692,9 @@ export async function runAcp(opts: {
         const formatted = formatEnvelopeForServerLog(opts.agentName, envelope);
         logAcp('muted', formatted.text);
       }
-      session.sendSessionProtocolMessage(envelope);
+      if (syncGate.shouldUpload()) {
+        session.sendSessionProtocolMessage(envelope);
+      }
       if (verbose) {
         logAcp('muted', `Incoming raw envelope for ${opts.agentName}: ${formatUnknownForConsole(envelope, ACP_RAW_PREVIEW_CHARS)}`);
       }
@@ -682,7 +784,73 @@ export async function runAcp(opts: {
         ...legacyModels,
         currentModelId: resolvedLegacyModel,
       };
+      session.updateMetadata((currentMetadata) =>
+        mergeAcpSessionConfigIntoMetadata(currentMetadata, {
+          models: legacyModels,
+        }),
+      );
     }
+  };
+
+  const switchThoughtLevelIfRequested = async (requestedThoughtLevel: string): Promise<void> => {
+    if (!requestedThoughtLevel || !thoughtLevelSelector) {
+      return;
+    }
+
+    const resolved = resolveRequestedCode(thoughtLevelSelector.options, requestedThoughtLevel);
+    if (!resolved) {
+      logger.debug(`[${opts.agentName}] Ignoring unknown ACP thought level request: ${requestedThoughtLevel}`);
+      return;
+    }
+    if (resolved === thoughtLevelSelector.currentCode) {
+      return;
+    }
+    const switched = await backend.setSessionConfigOption(thoughtLevelSelector.configId, resolved);
+    if (switched) {
+      thoughtLevelSelector.currentCode = resolved;
+    }
+  };
+
+  const getTerminalModelOptions = (): { options: TerminalPickOption[]; currentKey: string | null } => {
+    if (modelSelector) {
+      return {
+        currentKey: modelSelector.currentCode,
+        options: modelSelector.options.map((option) => ({
+          key: option.code,
+          label: option.value,
+        })),
+      };
+    }
+    if (legacyModels) {
+      return {
+        currentKey: legacyModels.currentModelId,
+        options: legacyModels.availableModels.map((model) => ({
+          key: model.modelId,
+          label: model.name,
+        })),
+      };
+    }
+    return { options: [], currentKey: null };
+  };
+
+  const handleTerminalModelCommand = async (rawArgument: string): Promise<void> => {
+    const requestedModel = rawArgument.trim();
+    if (requestedModel.length > 0) {
+      await switchModelIfRequested(requestedModel);
+      terminalChat?.turnSettled();
+      return;
+    }
+
+    const { options, currentKey } = getTerminalModelOptions();
+    const selected = await terminalChat?.pick({
+      title: 'Select model',
+      options,
+      currentKey,
+    });
+    if (selected) {
+      await switchModelIfRequested(selected);
+    }
+    terminalChat?.turnSettled();
   };
 
   const onBackendMessage = (msg: AgentMessage) => {
@@ -723,9 +891,11 @@ export async function runAcp(opts: {
 
         modeSelector = extractConfigSelector(configOptions, 'mode');
         modelSelector = extractConfigSelector(configOptions, 'model');
+        thoughtLevelSelector = extractConfigSelector(configOptions, 'thought_level');
+        sawModes = sawModes || modeSelector !== null;
+        sawModels = sawModels || modelSelector !== null;
         if (verbose) {
           if (modeSelector) {
-            sawModes = true;
             logAcp('muted', `Outgoing mode options from ${opts.agentName} (${modeSelector.options.length}), current=${modeSelector.currentCode}:`);
             for (const option of modeSelector.options) {
               logAcp('muted', `  mode=${option.code} label=${option.value}`);
@@ -734,13 +904,20 @@ export async function runAcp(opts: {
             logAcp('muted', `Outgoing mode options from ${opts.agentName}: not reported in config options`);
           }
           if (modelSelector) {
-            sawModels = true;
             logAcp('muted', `Outgoing model options from ${opts.agentName} (${modelSelector.options.length}), current=${modelSelector.currentCode}:`);
             for (const option of modelSelector.options) {
               logAcp('muted', `  model=${option.code} label=${option.value}`);
             }
           } else {
             logAcp('muted', `Outgoing model options from ${opts.agentName}: not reported in config options`);
+          }
+          if (thoughtLevelSelector) {
+            logAcp('muted', `Outgoing thought levels from ${opts.agentName} (${thoughtLevelSelector.options.length}), current=${thoughtLevelSelector.currentCode}:`);
+            for (const option of thoughtLevelSelector.options) {
+              logAcp('muted', `  thought=${option.code} label=${option.value}`);
+            }
+          } else {
+            logAcp('muted', `Outgoing thought levels from ${opts.agentName}: not reported in config options`);
           }
         }
         session.updateMetadata((currentMetadata) =>
@@ -816,14 +993,25 @@ export async function runAcp(opts: {
       if (msg.status === 'idle') {
         clearPendingTurn();
       }
-      if (msg.status === 'error' || msg.status === 'stopped') {
+      // A user-driven cancel only interrupts the running turn; the session
+      // stays alive and accepts the next prompt.
+      const isUserCancel = msg.status === 'stopped' && msg.detail === CANCELLED_BY_USER_DETAIL;
+      const isRecoverableStartupError = keepSessionOpenOnStartupError && msg.status === 'error';
+      if (!isRecoverableStartupError && (msg.status === 'error' || (msg.status === 'stopped' && !isUserCancel))) {
         stopRunnerFromBackendStatus(msg.status, msg.detail);
       }
     }
 
-    const frontendMessage = formatAcpMessageForFrontend(opts.agentName, msg, verbose);
-    if (frontendMessage) {
-      logAcp(frontendMessage.kind, frontendMessage.text);
+    if (terminalChat && msg.type === 'model-output') {
+      const text = msg.textDelta ?? msg.fullText ?? '';
+      if (text) {
+        terminalChat.writeAgentText(text);
+      }
+    } else {
+      const frontendMessage = formatAcpMessageForFrontend(opts.agentName, msg, verbose);
+      if (frontendMessage) {
+        logAcp(frontendMessage.kind, frontendMessage.text);
+      }
     }
 
     const envelopes = sessionManager.mapMessage(msg);
@@ -856,9 +1044,17 @@ export async function runAcp(opts: {
       logger.debug(`[${opts.agentName}] Requested ACP model: ${currentModel ?? 'null'}`);
     }
 
+    if (message.meta && Object.prototype.hasOwnProperty.call(message.meta, 'effort')) {
+      currentEffort = message.meta.effort ?? null;
+      logger.debug(`[${opts.agentName}] Requested ACP thought level: ${currentEffort ?? 'null'}`);
+    }
+
+    syncGate.beginTurn('remote');
+    terminalChat?.showRemotePrompt(message.content.text);
     messageQueue.push(message.content.text, {
       permissionMode: currentPermissionMode,
       model: currentModel,
+      effort: currentEffort,
     });
   });
   session.keepAlive(thinking, 'remote');
@@ -882,16 +1078,189 @@ export async function runAcp(opts: {
   }
 
   session.rpcHandlerManager.registerHandler('abort', handleAbort);
+
+  let isCleaningUp = false;
+  const cleanup = async (cleanupOpts: { archive?: boolean } = { archive: false }) => {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+    shouldExit = true;
+    messageQueue.close();
+    clearInterval(keepAliveInterval);
+    reconnectionHandle?.cancel();
+    clearPendingTurn(new Error('ACP runner shutting down'));
+    activeTerminalChat = null;
+    terminalChat?.stop();
+
+    try {
+      permissionHandler.reset();
+    } catch (error) {
+      logger.debug(`[${opts.agentName}] Failed to reset permission handler:`, error);
+    }
+
+    backend.offMessage?.(onBackendMessage);
+    try {
+      await backend.dispose();
+    } catch (error) {
+      logger.debug(`[${opts.agentName}] Failed to dispose backend:`, error);
+    }
+
+    try {
+      happyServer.stop();
+    } catch (error) {
+      logger.debug(`[${opts.agentName}] Failed to stop Happy MCP server:`, error);
+    }
+
+    try {
+      if (cleanupOpts.archive) {
+        session.updateMetadata((currentMetadata) => ({
+          ...currentMetadata,
+          lifecycleState: 'archived',
+          lifecycleStateSince: Date.now(),
+          archivedBy: 'cli',
+          archiveReason: 'Session ended',
+        }));
+      }
+      session.sendSessionDeath();
+      try {
+        await api.deactivateSession(session.sessionId);
+      } catch (err) {
+        logger.debug(`[${opts.agentName}] deactivateSession during cleanup failed:`, err);
+      }
+      await session.flush();
+      await session.close();
+    } catch (error) {
+      logger.debug(`[${opts.agentName}] Session close failed:`, error);
+    }
+  };
+
+  const onSigInt = () => {
+    void cleanup({ archive: false }).then(() => process.exit(0));
+  };
+  const onSigTerm = () => {
+    void cleanup({ archive: false }).then(() => process.exit(0));
+  };
+
+  process.on('SIGINT', onSigInt);
+  process.on('SIGTERM', onSigTerm);
+
+  // Interactive terminals join the same session as the phone app: prompts typed
+  // here are queued exactly like remote ones and mirrored into the session
+  // transcript so both sides see one conversation. Non-TTY runs (daemon) get
+  // no chat and keep the log-only behavior.
+  const handleSyncCommand = (text: string): boolean => {
+    if (text !== '/sync' && text !== '/sync off') {
+      return false;
+    }
+    if (text === '/sync') {
+      syncGate.enable();
+      logAcp('muted', 'Phone sync enabled — new terminal turns will appear on your phone.');
+    } else {
+      syncGate.disable();
+      logAcp('muted', 'Phone sync disabled — terminal turns stay off the phone.');
+    }
+    terminalChat?.turnSettled();
+    return true;
+  };
+
+  terminalChat = startTerminalChat({
+    prompt: `${opts.agentName}> `,
+    onSubmit: (text) => {
+      if (messageQueue.isClosed()) {
+        return;
+      }
+      if (handleSyncCommand(text)) {
+        return;
+      }
+      if (text === '/model' || text.startsWith('/model ')) {
+        void handleTerminalModelCommand(text.slice('/model'.length));
+        return;
+      }
+      syncGate.beginTurn('local');
+      if (syncGate.shouldUpload()) {
+        session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
+      }
+      if (text.startsWith('/')) {
+        messageQueue.pushIsolateAndClear(text, {});
+      } else {
+        messageQueue.push(text, {});
+      }
+    },
+    onRequestExit: () => {
+      void cleanup({ archive: false }).then(() => process.exit(0));
+    },
+  });
+  activeTerminalChat = terminalChat;
+  session.onHistoryMessage((message) => showTerminalHistoryMessage(terminalChat, message));
+
   registerKillSessionHandler(session.rpcHandlerManager, async () => {
     shouldExit = true;
     messageQueue.close();
     clearPendingTurn(new Error('Session terminated'));
     await handleAbort();
+    await cleanup({ archive: true });
   });
 
   try {
-    const started = await backend.startSession();
-    acpSessionId = started.sessionId;
+    if (opts.agentName === 'traex' && opts.resumeAcpSessionId && !reconnectSessionId) {
+      for (const envelope of buildTraexHistoryBackfillEnvelopes(opts.resumeAcpSessionId)) {
+        session.sendSessionProtocolMessage(envelope);
+        showTerminalHistoryMessage(terminalChat, {
+          role: 'session',
+          content: { type: 'session', data: envelope },
+        });
+      }
+    }
+    try {
+      keepSessionOpenOnStartupError = opts.agentName === 'traex' && !!opts.resumeAcpSessionId && !reconnectSessionId;
+      const started = await backend.startSession();
+      keepSessionOpenOnStartupError = false;
+      acpSessionId = started.sessionId;
+    } catch (error) {
+      keepSessionOpenOnStartupError = false;
+      const detail = error instanceof Error ? error.message : formatUnknownForConsole(error, ACP_RAW_PREVIEW_CHARS);
+      logAcp('error', `${opts.agentName} failed to resume session: ${detail}`);
+      if (!errorReportedForCurrentTurn && syncGate.shouldUpload()) {
+        session.sendSessionEvent({
+          type: 'message',
+          message: `${opts.agentName} error: ${detail}`,
+        });
+        errorReportedForCurrentTurn = true;
+      }
+      if (syncGate.shouldUpload()) {
+        session.sendSessionEvent({ type: 'ready' });
+      }
+      terminalChat?.turnSettled();
+      while (!shouldExit) {
+        const batch = await messageQueue.waitForMessagesAndGetAsString(abortController.signal);
+        if (!batch) break;
+        logAcp('error', `${opts.agentName} is not connected. ${detail}`);
+        terminalChat?.turnSettled();
+      }
+      return;
+    }
+    if (acpSessionIdMetadataKey) {
+      const nextMetadata = {
+        ...metadata,
+        [acpSessionIdMetadataKey]: acpSessionId ?? undefined,
+      };
+      session.updateMetadata((currentMetadata) => ({
+        ...currentMetadata,
+        [acpSessionIdMetadataKey]: acpSessionId ?? undefined,
+      }));
+      if (response) {
+        try {
+          await notifyDaemonSessionStarted(response.id, nextMetadata, {
+            encryptionKey: encodeBase64(response.encryptionKey),
+            encryptionVariant: response.encryptionVariant,
+            seq: response.seq,
+            metadataVersion: response.metadataVersion,
+            agentStateVersion: response.agentStateVersion,
+          });
+        } catch (error) {
+          logger.debug(`[acp] Failed to report ${opts.agentName} ACP session ID to daemon:`, error);
+        }
+      }
+    }
     if (verbose) {
       if (!sawSlashCommands) {
         logAcp('muted', `Outgoing slash commands from ${opts.agentName}: not reported yet`);
@@ -902,6 +1271,12 @@ export async function runAcp(opts: {
       if (!sawModels) {
         logAcp('muted', `Outgoing models from ${opts.agentName}: not reported yet`);
       }
+    }
+    if (terminalChat) {
+      logAcp('muted', syncGate.isEnabled()
+        ? 'Chat enabled in this terminal — the same session is live in the Happy app. Ctrl+C exits.'
+        : 'Chat enabled in this terminal — phone sync is OFF, terminal turns stay local until you run /sync. Ctrl+C exits.');
+      terminalChat.turnSettled();
     }
 
     while (!shouldExit) {
@@ -921,8 +1296,12 @@ export async function runAcp(opts: {
         throw new Error('ACP session is not started');
       }
 
-      logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
+      if (!terminalChat || verbose) {
+        logAcp('incoming', `Incoming prompt: ${formatUnknownForConsole(batch.message, ACP_EVENT_PREVIEW_CHARS)}`);
+      }
       errorReportedForCurrentTurn = false;
+      const turnStartedAt = Date.now();
+      terminalChat?.setBusy(true, `${opts.agentName} is working…`);
       sendEnvelopes(sessionManager.startTurn());
       const turnEnded = waitForTurnEnd();
       try {
@@ -932,16 +1311,26 @@ export async function runAcp(opts: {
         if (typeof batch.mode.model === 'string' && batch.mode.model.length > 0) {
           await switchModelIfRequested(batch.mode.model);
         }
+        if (typeof batch.mode.effort === 'string' && batch.mode.effort.length > 0) {
+          await switchThoughtLevelIfRequested(batch.mode.effort);
+        }
         await backend.sendPrompt(acpSessionId, batch.message);
         await turnEnded;
         sendEnvelopes(sessionManager.endTurn('completed'));
-        session.sendSessionEvent({ type: 'ready' });
+        if (syncGate.shouldUpload()) {
+          session.sendSessionEvent({ type: 'ready' });
+        }
+        syncGate.endTurn();
+        if (terminalChat && !verbose) {
+          logAcp('muted', `✓ Turn completed in ${((Date.now() - turnStartedAt) / 1000).toFixed(1)}s`);
+        }
+        terminalChat?.turnSettled();
         if (verbose) {
           logAcp('muted', `Outgoing prompt completion from ${opts.agentName}`);
         }
       } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        if (!errorReportedForCurrentTurn) {
+        const detail = error instanceof Error ? error.message : formatUnknownForConsole(error, ACP_RAW_PREVIEW_CHARS);
+        if (!errorReportedForCurrentTurn && syncGate.shouldUpload()) {
           session.sendSessionEvent({
             type: 'message',
             message: `${opts.agentName} error: ${detail}`,
@@ -949,46 +1338,23 @@ export async function runAcp(opts: {
           errorReportedForCurrentTurn = true;
         }
         sendEnvelopes(sessionManager.endTurn('failed'));
-        session.sendSessionEvent({ type: 'ready' });
-        logAcp('error', `Prompt error from ${opts.agentName}: ${detail}`);
-        clearPendingTurn(error instanceof Error ? error : new Error(String(error)));
+        if (syncGate.shouldUpload()) {
+          session.sendSessionEvent({ type: 'ready' });
+        }
+        syncGate.endTurn();
+        terminalChat?.turnSettled();
+        logAcp('error', `Prompt error from ${opts.agentName}: ${detail} — session kept alive, send another message to retry`);
+        clearPendingTurn(error instanceof Error ? error : new Error(detail));
         await turnEnded.catch(() => {});
-        throw error;
+        // A failed prompt (model error, rate limit, timeout) keeps the session
+        // alive; genuinely fatal backend failures flip shouldExit above and end
+        // the loop on the next iteration.
+        continue;
       }
     }
   } finally {
-    clearInterval(keepAliveInterval);
-    reconnectionHandle?.cancel();
-    clearPendingTurn(new Error('ACP runner shutting down'));
-
-    try {
-      permissionHandler.reset();
-    } catch (error) {
-      logger.debug(`[${opts.agentName}] Failed to reset permission handler:`, error);
-    }
-
-    backend.offMessage?.(onBackendMessage);
-    await backend.dispose();
-
-    try {
-      happyServer.stop();
-    } catch (error) {
-      logger.debug(`[${opts.agentName}] Failed to stop Happy MCP server:`, error);
-    }
-
-    try {
-      session.updateMetadata((currentMetadata) => ({
-        ...currentMetadata,
-        lifecycleState: 'archived',
-        lifecycleStateSince: Date.now(),
-        archivedBy: 'cli',
-        archiveReason: 'Session ended',
-      }));
-      session.sendSessionDeath();
-      await session.flush();
-      await session.close();
-    } catch (error) {
-      logger.debug(`[${opts.agentName}] Session close failed:`, error);
-    }
+    process.off('SIGINT', onSigInt);
+    process.off('SIGTERM', onSigTerm);
+    await cleanup({ archive: true });
   }
 }

@@ -29,7 +29,7 @@ const RIG = 'rig-machine';
 function cli(id = CLI, options?: { active?: boolean; activeAt?: number }) {
     return machine(id, {
         host: 'laptop.local',
-        cliAvailability: { claude: true, codex: true, gemini: false, openclaw: false },
+        cliAvailability: { claude: true, codex: true, gemini: false, openclaw: false, kimi: false },
     }, options);
 }
 
@@ -144,9 +144,19 @@ describe('what a computer can actually run', () => {
             host: 'laptop.local',
             cliAvailability: { claude: true, agy: true },
         })])[0];
+        const kimiInstalled = collectMachineChoices([machine('kimi-machine', {
+            host: 'laptop.local',
+            cliAvailability: { claude: true, kimi: true },
+        })])[0];
+        const traexInstalled = collectMachineChoices([machine('traex-machine', {
+            host: 'laptop.local',
+            cliAvailability: { claude: true, traex: true },
+        })])[0];
 
         expect(listMachineChoiceAvailableAgents(absent)).toEqual(['claude', 'codex']);
         expect(listMachineChoiceAvailableAgents(installed)).toEqual(['claude', 'agy']);
+        expect(listMachineChoiceAvailableAgents(kimiInstalled)).toEqual(['claude', 'kimi']);
+        expect(listMachineChoiceAvailableAgents(traexInstalled)).toEqual(['claude', 'traex']);
         expect(listMachineChoiceAvailableAgents(paired)).toEqual(['claude', 'codex', 'rig']);
     });
 
@@ -157,6 +167,8 @@ describe('what a computer can actually run', () => {
                 claude: true,
                 codex: false,
                 agy: false,
+                kimi: false,
+                traex: false,
                 gemini: false,
                 openclaw: false,
             },
@@ -172,6 +184,8 @@ describe('what a computer can actually run', () => {
                 claude: false,
                 codex: false,
                 agy: false,
+                kimi: false,
+                traex: false,
                 gemini: false,
                 openclaw: false,
             },
@@ -186,6 +200,28 @@ describe('what a computer can actually run', () => {
         const cliOnly = collectMachineChoices([cli()])[0];
         expect(resolveChoiceAgent(cliOnly, 'rig')).toBe('claude');
         expect(resolveChoiceAgent(cliOnly, 'gemini')).toBe('claude');
+    });
+
+    it('does not keep Kimi selected unless the machine reports Kimi support', () => {
+        const cliOnly = collectMachineChoices([cli()])[0];
+        const kimiOnly = collectMachineChoices([machine('kimi-machine', {
+            host: 'laptop.local',
+            cliAvailability: { claude: false, codex: false, kimi: true },
+        })])[0];
+
+        expect(resolveChoiceAgent(cliOnly, 'kimi')).toBe('claude');
+        expect(resolveChoiceAgent(kimiOnly, 'kimi')).toBe('kimi');
+    });
+
+    it('does not keep TraeX selected unless the machine reports TraeX support', () => {
+        const cliOnly = collectMachineChoices([cli()])[0];
+        const traexOnly = collectMachineChoices([machine('traex-machine', {
+            host: 'laptop.local',
+            cliAvailability: { claude: false, codex: false, traex: true },
+        })])[0];
+
+        expect(resolveChoiceAgent(cliOnly, 'traex')).toBe('claude');
+        expect(resolveChoiceAgent(traexOnly, 'traex')).toBe('traex');
     });
 
     it('sends each agent to the daemon that runs it', () => {

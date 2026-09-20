@@ -316,6 +316,7 @@ interface StorageState {
     getActiveSessions: () => Session[];
     updateSessionDraft: (sessionId: string, draft: string | null) => void;
     updateSessionAgentModes: (sessionId: string, patch: SessionAgentModesPatch) => void;
+    applySessionMetadata: (sessionId: string, metadata: Session['metadata']) => void;
     markSessionMessageSent: (sessionId: string) => void;
     // Artifact methods
     applyArtifacts: (artifacts: DecryptedArtifact[]) => void;
@@ -1206,6 +1207,22 @@ export const storage = create<StorageState>()((set, get) => {
                         ...(patch.effortLevel !== undefined && { effortLevel: patch.effortLevel }),
                     }
                 }
+            };
+        }),
+        applySessionMetadata: (sessionId: string, metadata: Session['metadata']) => set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session) return state;
+            const updatedSessions = {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    metadata,
+                },
+            };
+            return {
+                ...state,
+                sessions: updatedSessions,
+                sessionListViewData: buildSessionListViewData(updatedSessions, state.unreadSessionIds, state.machines, state.projects),
             };
         }),
         markSessionMessageSent: (sessionId: string) => set((state) => {

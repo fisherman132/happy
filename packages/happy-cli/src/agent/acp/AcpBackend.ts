@@ -19,6 +19,8 @@ import {
   type InitializeRequest,
   type NewSessionRequest,
   type NewSessionResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
   type PromptRequest,
   type ContentBlock,
 } from '@agentclientprotocol/sdk';
@@ -206,6 +208,9 @@ export interface AcpBackendOptions {
 
   /** Log raw session updates to console */
   verbose?: boolean;
+
+  /** Existing ACP session ID to resume instead of creating a new ACP session */
+  resumeSessionId?: string;
 }
 
 /**
@@ -268,6 +273,32 @@ function nodeToWebStreams(
   return { writable, readable };
 }
 
+/** Status detail used when a turn is cancelled via the abort RPC — not fatal. */
+export const CANCELLED_BY_USER_DETAIL = 'Cancelled by user';
+
+/**
+ * Serialize thrown values for status details. The ACP SDK client rejects
+ * JSON-RPC error responses with the raw wire object ({code, message, data}),
+ * which String() would render as "[object Object]".
+ */
+function describeAcpError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  try {
+    const serialized = JSON.stringify(error);
+    if (serialized) {
+      return serialized;
+    }
+  } catch {
+    // fall through
+  }
+  return String(error);
+}
+
 /**
  * Helper to run an async operation with retry logic
  */
@@ -288,7 +319,7 @@ async function withRetry<T>(
     try {
       return await operation();
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = error instanceof Error ? error : new Error(describeAcpError(error));
 
       const shouldRetry = options.shouldRetry ? options.shouldRetry(lastError) : true;
       if (attempt < options.maxAttempts && shouldRetry) {
@@ -376,12 +407,11 @@ export class AcpBackend implements AgentBackend {
       throw new Error('Backend has been disposed');
     }
 
-    const sessionId = randomUUID();
     this.emit({ type: 'status', status: 'starting' });
     let startupStatusErrorEmitted = false;
 
     try {
-      logger.debug(`[AcpBackend] Starting session: ${sessionId}`);
+      logger.debug(`[AcpBackend] Starting session`);
       // Spawn the ACP agent process
       const args = this.options.args || [];
       
@@ -777,7 +807,6 @@ export class AcpBackend implements AgentBackend {
         );
       }
 
-      // Create a new session with retry
       const mcpServers = this.options.mcpServers
         ? Object.entries(this.options.mcpServers).map(([name, config]) => ({
             name,
@@ -789,20 +818,34 @@ export class AcpBackend implements AgentBackend {
           }))
         : [];
 
-      const newSessionRequest: NewSessionRequest = {
-        cwd: this.options.cwd,
-        mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
-      };
-
-      logger.debug(`[AcpBackend] Creating new session...`);
+      const resumeSessionId = this.options.resumeSessionId;
+      logger.debug(resumeSessionId
+        ? `[AcpBackend] Resuming session: ${resumeSessionId}`
+        : `[AcpBackend] Creating new session...`);
 
       const sessionResponse = await withRetry(
         async () => {
           let timeoutHandle: NodeJS.Timeout | null = null;
           try {
+            const sessionRequest = resumeSessionId
+              ? (async () => {
+                  if (typeof this.connection!.unstable_resumeSession !== 'function') {
+                    throw new Error(`${this.transport.agentName} does not support session resume`);
+                  }
+                  const resumeSessionRequest: ResumeSessionRequest = {
+                    cwd: this.options.cwd,
+                    sessionId: resumeSessionId,
+                    mcpServers: mcpServers as unknown as ResumeSessionRequest['mcpServers'],
+                  };
+                  return await this.connection!.unstable_resumeSession(resumeSessionRequest);
+                })()
+              : this.connection!.newSession({
+                  cwd: this.options.cwd,
+                  mcpServers: mcpServers as unknown as NewSessionRequest['mcpServers'],
+                });
             const result = await Promise.race([
               startupFailurePromise,
-              this.connection!.newSession(newSessionRequest).then((res) => {
+              sessionRequest.then((res) => {
                 if (timeoutHandle) {
                   clearTimeout(timeoutHandle);
                   timeoutHandle = null;
@@ -823,18 +866,20 @@ export class AcpBackend implements AgentBackend {
           }
         },
         {
-          operationName: 'NewSession',
+          operationName: resumeSessionId ? 'ResumeSession' : 'NewSession',
           maxAttempts: RETRY_CONFIG.maxAttempts,
           baseDelayMs: RETRY_CONFIG.baseDelayMs,
           maxDelayMs: RETRY_CONFIG.maxDelayMs,
           shouldRetry: (error) => !isNonRetryableStartupError(error),
         }
       );
-      this.acpSessionId = sessionResponse.sessionId;
-      logger.debug(`[AcpBackend] Session created: ${this.acpSessionId}`);
+      this.acpSessionId = resumeSessionId ?? (sessionResponse as NewSessionResponse).sessionId;
+      logger.debug(resumeSessionId
+        ? `[AcpBackend] Session resumed: ${this.acpSessionId}`
+        : `[AcpBackend] Session created: ${this.acpSessionId}`);
       if (this.options.verbose) {
         logAcpBackendMuted(
-          `Incoming newSession response from ${this.options.agentName}: ${summarizeSessionMetadataPayload(sessionResponse)}`,
+          `Incoming ${resumeSessionId ? 'resumeSession' : 'newSession'} response from ${this.options.agentName}: ${summarizeSessionMetadataPayload(sessionResponse)}`,
         );
       }
       this.emitInitialSessionMetadata(sessionResponse);
@@ -843,23 +888,23 @@ export class AcpBackend implements AgentBackend {
 
       // Send initial prompt if provided
       if (initialPrompt) {
-        this.sendPrompt(sessionId, initialPrompt).catch((error) => {
+        this.sendPrompt(this.acpSessionId, initialPrompt).catch((error) => {
           // Log to file only, not console
           logger.debug('[AcpBackend] Error sending initial prompt:', error);
-          this.emit({ type: 'status', status: 'error', detail: String(error) });
+          this.emit({ type: 'status', status: 'error', detail: describeAcpError(error) });
         });
       }
 
-      return { sessionId };
+      return { sessionId: this.acpSessionId };
 
     } catch (error) {
       // Log to file only, not console
       logger.debug('[AcpBackend] Error starting session:', error);
       if (!startupStatusErrorEmitted) {
-        this.emit({ 
-          type: 'status', 
-          status: 'error', 
-          detail: error instanceof Error ? error.message : String(error) 
+        this.emit({
+          type: 'status',
+          status: 'error',
+          detail: describeAcpError(error)
         });
       }
       throw error;
@@ -895,7 +940,7 @@ export class AcpBackend implements AgentBackend {
     };
   }
 
-  private emitInitialSessionMetadata(sessionResponse: NewSessionResponse): void {
+  private emitInitialSessionMetadata(sessionResponse: NewSessionResponse | ResumeSessionResponse): void {
     if (Array.isArray(sessionResponse.configOptions)) {
       this.emit({
         type: 'event',
@@ -1083,31 +1128,11 @@ export class AcpBackend implements AgentBackend {
     } catch (error) {
       logger.debug('[AcpBackend] Error sending prompt:', error);
       this.waitingForResponse = false;
-      
-      // Extract error details for better error handling
-      let errorDetail: string;
-      if (error instanceof Error) {
-        errorDetail = error.message;
-      } else if (typeof error === 'object' && error !== null) {
-        const errObj = error as Record<string, unknown>;
-        // Try to extract structured error information
-        const fallbackMessage = (typeof errObj.message === 'string' ? errObj.message : undefined) || String(error);
-        if (errObj.code !== undefined) {
-          errorDetail = JSON.stringify({ code: errObj.code, message: fallbackMessage });
-        } else if (typeof errObj.message === 'string') {
-          errorDetail = errObj.message;
-        } else {
-          errorDetail = String(error);
-        }
-      } else {
-        errorDetail = String(error);
-      }
-      
-      this.emit({ 
-        type: 'status', 
-        status: 'error', 
-        detail: errorDetail
-      });
+
+      // A rejected prompt (rate limit, model error, …) does not mean the agent
+      // process died. Reset to idle so the runner can accept the next prompt;
+      // the error itself travels to the caller through the rethrow below.
+      this.emitIdleStatus();
       throw error;
     }
   }
@@ -1244,7 +1269,10 @@ export class AcpBackend implements AgentBackend {
 
     try {
       await this.connection.cancel({ sessionId: this.acpSessionId });
-      this.emit({ type: 'status', status: 'stopped', detail: 'Cancelled by user' });
+      this.emit({ type: 'status', status: 'stopped', detail: CANCELLED_BY_USER_DETAIL });
+      // The agent sends no further updates for a cancelled turn, so the idle
+      // debounce would never fire — settle the pending turn right away.
+      this.emitIdleStatus();
     } catch (error) {
       // Log to file only, not console
       logger.debug('[AcpBackend] Error cancelling:', error);

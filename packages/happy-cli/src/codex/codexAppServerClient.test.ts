@@ -138,6 +138,48 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('loads the native Codex model catalog for the terminal picker', async () => {
+        const requests: MockRpcMessage[] = [];
+        mockSpawn.mockImplementation(() => createMockProcess({
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if (msg.method === 'model/list') {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: {
+                            data: [{
+                                id: 'gpt-test',
+                                model: 'gpt-test',
+                                displayName: 'GPT Test',
+                                description: 'Test model',
+                                hidden: false,
+                                isDefault: true,
+                                defaultReasoningEffort: 'medium',
+                                supportedReasoningEfforts: [],
+                            }],
+                            nextCursor: null,
+                        },
+                    });
+                }
+            },
+        }));
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        await client.connect();
+        const response = await client.listModels();
+
+        expect(requests).toContainEqual(expect.objectContaining({
+            method: 'model/list',
+            params: { cursor: null, limit: 100, includeHidden: false },
+        }));
+        expect(response.data[0]).toMatchObject({
+            model: 'gpt-test',
+            displayName: 'GPT Test',
+        });
+        await client.disconnect();
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');

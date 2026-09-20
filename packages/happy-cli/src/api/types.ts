@@ -145,9 +145,11 @@ export const MachineMetadataSchema = z.object({
     codex: z.boolean(),
     gemini: z.boolean(),
     openclaw: z.boolean(),
-    // Optional so metadata written by a CLI predating agy detection still
+    // Optional so metadata written by a CLI predating newer agent detection still
     // matches this shape. detectCLIAvailability always reports it.
     agy: z.boolean().optional(),
+    kimi: z.boolean().optional(),
+    traex: z.boolean().optional(),
     detectedAt: z.number(),
   }).optional(),
   resumeSupport: z.object({
@@ -316,6 +318,9 @@ export type Metadata = {
   gitBranch?: string,
   claudeSessionId?: string, // Claude Code session ID
   codexThreadId?: string, // Codex app-server thread ID
+  kimiSessionId?: string, // Kimi ACP session ID
+  traexSessionId?: string, // TraeX ACP session ID
+  agyConversationId?: string, // Antigravity conversation ID
   tools?: string[],
   slashCommands?: string[],
   mcpServers?: Array<{ name: string; status: string }>,

@@ -42,8 +42,12 @@ vi.mock('@/sync/storage', () => ({
 }));
 
 vi.mock('@/sync/agentDefaults', () => ({
-    getCodeAgentDefaults: (_agentType: string, cliVersion?: string) => ({
-        permissionMode: cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1' ? 'default' : 'auto',
+    getCodeAgentDefaults: (agentType: string, cliVersion?: string) => ({
+        permissionMode: agentType === 'kimi' || agentType === 'traex'
+            ? 'default'
+            : cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
+                ? 'default'
+                : 'auto',
         modelMode: 'default',
         effortLevel: null,
     }),
@@ -52,7 +56,11 @@ vi.mock('@/sync/agentDefaults', () => ({
         agentType: string,
         cliVersion?: string,
     ) => overrides[agentType] ?? ({
-        permissionMode: cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1' ? 'default' : 'auto',
+        permissionMode: agentType === 'kimi' || agentType === 'traex'
+            ? 'default'
+            : cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
+                ? 'default'
+                : 'auto',
         modelMode: 'default',
         effortLevel: null,
     }),
@@ -99,25 +107,30 @@ vi.mock('@/utils/worktree', () => ({
 vi.mock('@/utils/time', () => ({ delay: mocks.delay }));
 
 vi.mock('@/components/modelModeOptions', () => ({
+    isAcpCatalogDrivenFlavor: (agentType: string) => agentType === 'kimi' || agentType === 'traex',
     filterPermissionModesForCli: (modes: any[], cliVersion?: string) => (
         cliVersion === '1.2.0' || cliVersion === '1.2.1-beta.1'
             ? modes.filter((mode) => mode.key !== 'auto')
             : modes
     ),
-    getHardcodedPermissionModes: () => [
-        { key: 'auto', name: 'Auto' },
-        { key: 'default', name: 'Default' },
-        { key: 'safe-yolo', name: 'Safe YOLO' },
-        { key: 'yolo', name: 'YOLO' },
-        { key: 'bypassPermissions', name: 'YOLO' },
-    ],
+    getHardcodedPermissionModes: (agentType: string) => agentType === 'kimi' || agentType === 'traex'
+        ? [{ key: 'default', name: 'Default' }]
+        : [
+            { key: 'auto', name: 'Auto' },
+            { key: 'default', name: 'Default' },
+            { key: 'safe-yolo', name: 'Safe YOLO' },
+            { key: 'yolo', name: 'YOLO' },
+            { key: 'bypassPermissions', name: 'YOLO' },
+        ],
     getHardcodedModelModes: () => [
         { key: 'default', name: 'Default' },
         { key: 'opus', name: 'Opus' },
     ],
-    getEffortLevelsForModel: () => [
-        { key: 'medium', name: 'Medium' },
-    ],
+    getEffortLevelsForModel: (agentType: string) => agentType === 'kimi' || agentType === 'traex'
+        ? []
+        : [
+            { key: 'medium', name: 'Medium' },
+        ],
     getSupportsWorktree: (agentType: string) => agentType !== 'openclaw',
     includeConfiguredModel: (
         flavor: string,
@@ -285,6 +298,34 @@ describe('useStartSessionFromDraft', () => {
         }));
     });
 
+    it('does not send Kimi default mode as a CLI launch argument', async () => {
+        mocks.machines = [{
+            id: 'machine-1',
+            online: true,
+            metadata: {
+                homeDir: '/Users/dev',
+                cliAvailability: {
+                    claude: true,
+                    codex: true,
+                    gemini: false,
+                    openclaw: false,
+                    kimi: true,
+                    detectedAt: 1,
+                },
+            },
+        }];
+        mocks.draft = createDraft({ agentType: 'kimi' });
+
+        const { startSession } = useStartSessionFromDraft();
+
+        await expect(startSession()).resolves.toBe(true);
+
+        expect(mocks.machineSpawnNewSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'kimi',
+            permissionMode: undefined,
+        }));
+    });
+
     it('keeps a user-selected YOLO override on an old CLI', async () => {
         mocks.machines = [{
             id: 'machine-1',
@@ -370,6 +411,78 @@ describe('useStartSessionFromDraft', () => {
             modelMode: undefined,
             effortLevel: 'medium',
         }));
+    });
+
+    it('starts Kimi when the selected machine explicitly reports it as available', async () => {
+        mocks.machines = [{
+            id: 'machine-1',
+            online: true,
+            metadata: {
+                homeDir: '/Users/dev',
+                cliAvailability: {
+                    claude: false,
+                    codex: false,
+                    gemini: false,
+                    openclaw: false,
+                    kimi: true,
+                },
+            },
+        }];
+        mocks.draft = createDraft({
+            agentType: 'kimi',
+            permissionMode: 'default',
+            modelMode: 'default',
+        });
+
+        const { startSession } = useStartSessionFromDraft();
+
+        await expect(startSession()).resolves.toBe(true);
+
+        expect(mocks.machineSpawnNewSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'kimi',
+            modelMode: undefined,
+        }));
+        expect(mocks.sessionSetAgentModes).toHaveBeenCalledWith('session-1', {
+            permissionMode: 'default',
+            modelMode: 'default',
+            effortLevel: null,
+        });
+    });
+
+    it('starts TraeX when the selected machine explicitly reports it as available', async () => {
+        mocks.machines = [{
+            id: 'machine-1',
+            online: true,
+            metadata: {
+                homeDir: '/Users/dev',
+                cliAvailability: {
+                    claude: false,
+                    codex: false,
+                    gemini: false,
+                    openclaw: false,
+                    traex: true,
+                },
+            },
+        }];
+        mocks.draft = createDraft({
+            agentType: 'traex',
+            permissionMode: 'default',
+            modelMode: 'default',
+        });
+
+        const { startSession } = useStartSessionFromDraft();
+
+        await expect(startSession()).resolves.toBe(true);
+
+        expect(mocks.machineSpawnNewSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'traex',
+            modelMode: undefined,
+        }));
+        expect(mocks.sessionSetAgentModes).toHaveBeenCalledWith('session-1', {
+            permissionMode: 'default',
+            modelMode: 'default',
+            effortLevel: null,
+        });
     });
 
     it('explains how to restart an offline legacy daemon when its paired Happy Agent is online', async () => {

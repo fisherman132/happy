@@ -6,6 +6,8 @@ describe('harness catalog', () => {
     it('names Happy and Antigravity by product, not by CLI id', () => {
         expect(HARNESS_NAMES.rig).toBe('Happy');
         expect(HARNESS_NAMES.agy).toBe('Antigravity');
+        expect(HARNESS_NAMES.kimi).toBe('Kimi');
+        expect(HARNESS_NAMES.traex).toBe('TraeX');
     });
 
     it('retires Gemini and OpenClaw only', () => {
@@ -18,15 +20,17 @@ describe('harness catalog', () => {
 
     it('lists only installed harnesses, in pick order', () => {
         const harnesses = listAvailableHarnesses({
-            availability: { claude: true, codex: true, agy: true },
+            availability: { claude: true, codex: true, kimi: true, traex: true, agy: true },
             happyAgentAvailable: true,
             selected: 'claude',
         });
 
-        expect(harnesses.map((harness) => harness.key)).toEqual(['claude', 'codex', 'agy', 'rig']);
+        expect(harnesses.map((harness) => harness.key)).toEqual(['claude', 'codex', 'kimi', 'traex', 'agy', 'rig']);
         expect(harnesses.map((harness) => harness.name)).toEqual([
             'Claude Code',
             'Codex',
+            'Kimi',
+            'TraeX',
             'Antigravity',
             'Happy',
         ]);
@@ -79,17 +83,29 @@ describe('harness catalog', () => {
         expect(harnesses.map((harness) => harness.key)).toEqual(['claude', 'codex']);
     });
 
-    it('never lists Antigravity without an explicit installation report', () => {
+    it('never lists newer harnesses without an explicit installation report', () => {
         expect(listAvailableHarnesses({
-            availability: { claude: true, agy: false },
+            availability: { claude: true, agy: false, kimi: false },
             happyAgentAvailable: false,
             selected: 'agy',
         }).map((harness) => harness.key)).toEqual(['claude']);
 
         expect(listAvailableHarnesses({
+            availability: { claude: true, kimi: false },
+            happyAgentAvailable: false,
+            selected: 'kimi',
+        }).map((harness) => harness.key)).toEqual(['claude']);
+
+        expect(listAvailableHarnesses({
+            availability: { claude: true, traex: false },
+            happyAgentAvailable: false,
+            selected: 'traex',
+        }).map((harness) => harness.key)).toEqual(['claude']);
+
+        expect(listAvailableHarnesses({
             availability: null,
             happyAgentAvailable: false,
-            selected: 'agy',
+            selected: 'traex',
         }).map((harness) => harness.key)).toEqual(['claude', 'codex']);
     });
 

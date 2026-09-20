@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { resolveAvatarHarness } from './avatarHarness';
 
 describe('resolveAvatarHarness', () => {
-    it('keeps the existing Claude, Codex, and Antigravity mappings', () => {
+    it('keeps the active harness mappings', () => {
         expect(resolveAvatarHarness('claude')).toBe('claude');
         expect(resolveAvatarHarness('codex')).toBe('codex');
         expect(resolveAvatarHarness('agy')).toBe('agy');
+        expect(resolveAvatarHarness('kimi')).toBe('kimi');
+        expect(resolveAvatarHarness('traex')).toBe('traex');
     });
 
     it('uses Happy for the Rig client regardless of provider flavor', () => {

@@ -317,6 +317,28 @@ export default function MachineDetailScreen() {
                                 </Text>
                             }
                         />
+                        {metadata.cliAvailability.kimi !== undefined && (
+                            <Item
+                                title="Kimi"
+                                showChevron={false}
+                                rightElement={
+                                    <Text style={{ color: metadata.cliAvailability.kimi ? '#34C759' : theme.colors.textSecondary, fontSize: 14 }}>
+                                        {metadata.cliAvailability.kimi ? t('machine.cliInstalled') : t('machine.cliNotFound')}
+                                    </Text>
+                                }
+                            />
+                        )}
+                        {metadata.cliAvailability.traex !== undefined && (
+                            <Item
+                                title="TraeX"
+                                showChevron={false}
+                                rightElement={
+                                    <Text style={{ color: metadata.cliAvailability.traex ? '#34C759' : theme.colors.textSecondary, fontSize: 14 }}>
+                                        {metadata.cliAvailability.traex ? t('machine.cliInstalled') : t('machine.cliNotFound')}
+                                    </Text>
+                                }
+                            />
+                        )}
                         {metadata.cliAvailability.rig !== undefined && (
                             <Item
                                 title="Rig"

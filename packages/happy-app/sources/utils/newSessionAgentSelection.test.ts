@@ -31,6 +31,30 @@ describe('resolveMachineAgent', () => {
         expect(resolveMachineAgent('claude', undefined)).toBe('claude');
     });
 
+    it('requires explicit Kimi availability before keeping a Kimi selection', () => {
+        expect(resolveMachineAgent('kimi', undefined)).toBe('claude');
+        expect(resolveMachineAgent('kimi', {
+            claude: true,
+            kimi: false,
+        })).toBe('claude');
+        expect(resolveMachineAgent('kimi', {
+            claude: true,
+            kimi: true,
+        })).toBe('kimi');
+    });
+
+    it('requires explicit TraeX availability before keeping a TraeX selection', () => {
+        expect(resolveMachineAgent('traex', undefined)).toBe('claude');
+        expect(resolveMachineAgent('traex', {
+            claude: true,
+            traex: false,
+        })).toBe('claude');
+        expect(resolveMachineAgent('traex', {
+            claude: true,
+            traex: true,
+        })).toBe('traex');
+    });
+
     it('keeps the persisted selection when no CLI is reported', () => {
         expect(resolveMachineAgent('claude', {
             claude: false,

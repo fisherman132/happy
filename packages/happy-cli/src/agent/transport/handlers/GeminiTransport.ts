@@ -223,10 +223,19 @@ export class GeminiTransport implements TransportHandler {
   }
 
   /**
-   * Get idle detection timeout
+   * Get idle detection timeout in milliseconds.
    */
   getIdleTimeout(): number {
     return GEMINI_TIMEOUTS.idle;
+  }
+
+  /**
+   * Gemini streams some thought summaries as message chunks wrapped in a
+   * leading bold line. Kept here (and only here) because other agents — Kimi
+   * in particular — start ordinary answer paragraphs with bold headers.
+   */
+  isThinkingMessageChunk(text: string): boolean {
+    return /^\*\*[^*]+\*\*\n/.test(text);
   }
 
   /**

@@ -16,6 +16,8 @@ import {
     Image as RNImage,
     Keyboard,
     useWindowDimensions,
+    type ImageStyle,
+    type StyleProp,
 } from 'react-native';
 import { GlassView } from 'expo-glass-effect';
 import { Ionicons, Octicons, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -103,6 +105,8 @@ import {
     LocalBlurHalo,
 } from '@/components/AnimatedOverlay';
 
+type AgentKey = NewSessionAgentType;
+
 // Agent icon assets
 const agentIcons = {
     rig: require('@/assets/images/logo-black.png'),
@@ -112,13 +116,47 @@ const agentIcons = {
     gemini: require('@/assets/images/icon-gemini.png'),
     agy: require('@/assets/images/icon-agy.png'),
 };
+type ImageAgentKey = keyof typeof agentIcons;
 
-type AgentKey = NewSessionAgentType;
+function isImageAgent(agent: AgentKey): agent is ImageAgentKey {
+    return agent in agentIcons;
+}
+
+function AgentIcon({
+    agent,
+    size,
+    style,
+}: {
+    agent: AgentKey;
+    size?: number;
+    style?: StyleProp<ImageStyle>;
+}) {
+    const { theme } = useUnistyles();
+    if (agent === 'kimi') {
+        const resolvedSize = size ?? 16;
+        return <Ionicons name="moon-outline" size={resolvedSize} color={theme.colors.textSecondary} />;
+    }
+    if (agent === 'traex') {
+        const resolvedSize = size ?? 16;
+        return <Ionicons name="code-slash-outline" size={resolvedSize} color={theme.colors.textSecondary} />;
+    }
+    if (!isImageAgent(agent)) return null;
+    return (
+        <RNImage
+            source={agentIcons[agent]}
+            style={style}
+            resizeMode="contain"
+        />
+    );
+}
+
 // Lowercased to match this screen's type, but the same names and pick order as
 // the Home composer's harness picker. Retired harnesses are absent from both.
 const ALL_AGENTS: { key: AgentKey; label: string }[] = [
     { key: 'claude', label: 'claude code' },
     { key: 'codex', label: 'codex' },
+    { key: 'kimi', label: 'kimi' },
+    { key: 'traex', label: 'traex' },
     { key: 'agy', label: 'antigravity' },
     { key: 'rig', label: 'happy' },
 ];
@@ -1523,9 +1561,8 @@ function NewSessionScreen() {
                     directory: spawnDirectory,
                     approvedNewDirectoryCreation,
                     agent: agentType,
-                    // For codex, 'default' is a concrete ask-first mode (the codex
-                    // launch default is yolo) — it must be forwarded. For other
-                    // agents 'default' is the ambient no-override value.
+                    // Codex Default is a concrete ask-first policy, not an
+                    // ambient absence of an override.
                     permissionMode: permissionKey && (agentType === 'codex' || permissionKey !== 'default')
                         ? permissionKey
                         : undefined,
@@ -1924,10 +1961,10 @@ function NewSessionScreen() {
                                             onPress={() => togglePicker('agent')}
                                             style={(p) => [styles.configInlineField, p.pressed && styles.configRowPressed]}
                                         >
-                                            <RNImage
-                                                source={agentIcons[agent.key]}
+                                            <AgentIcon
+                                                agent={agent.key}
+                                                size={15}
                                                 style={[styles.agentIcon, { tintColor: theme.colors.textSecondary }]}
-                                                resizeMode="contain"
                                             />
                                             <Text style={[styles.configLabel, styles.configInlineText]} numberOfLines={1}>
                                                 {agent.label}
@@ -2041,10 +2078,10 @@ function NewSessionScreen() {
                                         hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                                         style={(p) => [styles.collapsedIconButton, p.pressed && styles.configRowPressed]}
                                     >
-                                        <RNImage
-                                            source={agentIcons[agent.key]}
+                                        <AgentIcon
+                                            agent={agent.key}
+                                            size={14}
                                             style={[styles.collapsedAgentIcon, { tintColor: theme.colors.textSecondary }]}
-                                            resizeMode="contain"
                                         />
                                     </BubblePressable>
 
@@ -2186,10 +2223,10 @@ function NewSessionScreen() {
                             accessibilityRole="button"
                             accessibilityLabel={`Agent: ${agent.label}`}
                         >
-                            <RNImage
-                                source={agentIcons[agent.key]}
+                            <AgentIcon
+                                agent={agent.key}
+                                size={14}
                                 style={[styles.collapsedAgentIcon, { tintColor: theme.colors.textSecondary }]}
-                                resizeMode="contain"
                             />
                             <Text style={styles.composerAgentLabel} numberOfLines={1}>
                                 {agent.label}

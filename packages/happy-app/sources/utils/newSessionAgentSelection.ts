@@ -11,7 +11,9 @@ const DEFAULT_AGENT: NewSessionAgentType = 'claude';
 /**
  * Keep the persisted selection when it is still installed. If it is stale,
  * use the first CLI the selected machine actually reports as available.
- * Older machines without capability metadata retain the persisted selection.
+ * Older machines without capability metadata retain the persisted selection
+ * for the core harnesses only. Kimi and TraeX are newer, so they require an explicit
+ * installation report before selection.
  *
  * A retired harness is always replaced, installed or not: its CLI being
  * present on the machine is exactly the case where a stale draft would
@@ -24,6 +26,12 @@ export function resolveMachineAgent(
     if (isRetiredHarness(selectedAgent)) {
         return NEW_SESSION_AGENT_ORDER.find((agent) => !availability || availability[agent])
             ?? DEFAULT_AGENT;
+    }
+
+    if (selectedAgent === 'kimi' || selectedAgent === 'traex') {
+        return availability?.[selectedAgent] === true
+            ? selectedAgent
+            : (NEW_SESSION_AGENT_ORDER.find((agent) => agent !== 'kimi' && agent !== 'traex' && (!availability || availability[agent])) ?? DEFAULT_AGENT);
     }
 
     if (!availability || availability[selectedAgent]) {

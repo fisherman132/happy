@@ -107,4 +107,8 @@ export class CodexRemoteModeState {
         this.currentPermissionMode = this.initialPermissionMode;
         this.currentPermissionModeExplicitlySet = false;
     }
+
+    setModel(model: string | undefined): void {
+        this.currentModel = model;
+    }
 }

@@ -52,8 +52,8 @@ describe('Rig metadata', () => {
     });
 
     it('maps known provider kinds and gives unknown providers a neutral fallback', () => {
-        expect(['codex', 'claude', 'grok', 'kimi', 'custom'].map(getProviderIconKind)).toEqual([
-            'codex', 'claude', 'grok', 'kimi', 'generic',
+        expect(['codex', 'claude', 'grok', 'kimi', 'traex', 'custom'].map(getProviderIconKind)).toEqual([
+            'codex', 'claude', 'grok', 'kimi', 'traex', 'generic',
         ]);
     });
 

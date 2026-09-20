@@ -37,6 +37,21 @@ import { handleCodexCommand } from './commands/codexCommand'
 import { sanitizeSessionEnvironment } from './daemon/sessionEnvironment'
 
 
+/**
+ * Describe a thrown value for the console. ACP backends surface raw JSON-RPC
+ * error objects ({code, message, data}) that String() renders as "[object Object]".
+ */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  try {
+    return JSON.stringify(error) ?? 'Unknown error'
+  } catch {
+    return 'Unknown error'
+  }
+}
+
+
 (async () => {
   const args = process.argv.slice(2)
 
@@ -81,7 +96,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleAuthCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -93,7 +108,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleConnectCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -104,7 +119,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleSandboxCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -115,7 +130,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleServerCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -129,7 +144,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleResumeCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -142,7 +157,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       await handleCodexCommand(args.slice(1));
       // Do not force exit here; allow instrumentation to show lingering handles
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -351,7 +366,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       await runGemini({credentials, startedBy});
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -364,6 +379,8 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
+      let noSync = false;
+      let sessionName: string | undefined = undefined;
       const acpArgs: string[] = [];
       let customCommandMode = false;
       for (let i = 1; i < args.length; i++) {
@@ -371,8 +388,19 @@ Conversation history is preserved on the server, but in-flight tool calls are in
           startedBy = args[++i] as 'daemon' | 'terminal';
           continue;
         }
+        if (!customCommandMode && args[i] === '--name') {
+          sessionName = args[++i];
+          if (!sessionName) {
+            throw new Error('Session name requires a value: happy acp <agent-name> --name <name>');
+          }
+          continue;
+        }
         if (!customCommandMode && args[i] === '--verbose') {
           verbose = true;
+          continue;
+        }
+        if (!customCommandMode && args[i] === '--no-sync') {
+          noSync = true;
           continue;
         }
         if (args[i] === '--') {
@@ -389,9 +417,165 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         credentials,
         startedBy,
         verbose,
+        noSync,
         agentName: resolved.agentName,
         command: resolved.command,
         args: resolved.args,
+        sessionName,
+      });
+    } catch (error) {
+      console.error(chalk.red('Error:'), describeError(error))
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'kimi') {
+    try {
+      const { runAcp, resolveAcpAgentConfig } = await import('@/agent/acp');
+
+      if (args.slice(1).some(a => a === '--help' || a === '-h')) {
+        console.log(`
+${chalk.bold('happy kimi')} - Start Kimi CLI mode via ACP
+
+${chalk.bold('Usage:')}
+  happy kimi [--resume <kimi-session-id>] [--name <name>] [--verbose] [--no-sync]
+
+${chalk.bold('Requirements:')}
+  - Install Kimi CLI so the \`kimi\` command is on PATH
+  - Run \`kimi login\` before starting a Happy Kimi session
+
+${chalk.bold('Notes:')}
+  Happy launches Kimi through its standard ACP server: \`kimi acp\`.
+  Kimi model and thinking-mode choices are read from Kimi's ACP model catalog.
+  You can chat directly in this terminal; the same session also stays live on your phone.
+  With --no-sync, terminal turns stay off the phone until you run /sync in the chat.
+`)
+        process.exit(0)
+      }
+
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let verbose = false;
+      let noSync = false;
+      let resumeAcpSessionId: string | undefined;
+      let sessionName: string | undefined;
+      const kimiArgs: string[] = ['kimi'];
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--happy-starting-mode') {
+          i++;
+        } else if (args[i] === '--resume') {
+          resumeAcpSessionId = args[++i];
+          if (!resumeAcpSessionId) {
+            throw new Error('Kimi resume requires a session ID: happy kimi --resume <kimi-session-id>');
+          }
+        } else if (args[i] === '--name') {
+          sessionName = args[++i];
+          if (!sessionName) {
+            throw new Error('Session name requires a value: happy kimi --name <name>');
+          }
+        } else if (args[i] === '--verbose') {
+          verbose = true;
+        } else if (args[i] === '--no-sync') {
+          noSync = true;
+        } else {
+          kimiArgs.push(args[i]);
+        }
+      }
+
+      const resolved = resolveAcpAgentConfig(kimiArgs);
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await ensureDaemonRunning()
+
+      await runAcp({
+        credentials,
+        startedBy,
+        verbose,
+        noSync,
+        agentName: resolved.agentName,
+        command: resolved.command,
+        args: resolved.args,
+        resumeAcpSessionId,
+        sessionName,
+      });
+    } catch (error) {
+      console.error(chalk.red('Error:'), describeError(error))
+      if (process.env.DEBUG) {
+        console.error(error)
+      }
+      process.exit(1)
+    }
+    return;
+  } else if (subcommand === 'traex') {
+    try {
+      const { runAcp, resolveAcpAgentConfig } = await import('@/agent/acp');
+
+      if (args.slice(1).some(a => a === '--help' || a === '-h')) {
+        console.log(`
+${chalk.bold('happy traex')} - Start TraeX CLI mode via ACP
+
+${chalk.bold('Usage:')}
+  happy traex [--resume <traex-session-id>] [--name <name>] [--verbose] [--no-sync]
+
+${chalk.bold('Requirements:')}
+  - Install TraeX so the \`traex\` command is on PATH
+  - Run \`traex login\` before starting a Happy TraeX session
+
+${chalk.bold('Notes:')}
+  Happy launches TraeX through its standard ACP server: \`traex acp serve\`.
+  TraeX model, permission, and thinking choices are read from TraeX's ACP catalog.
+  You can chat directly in this terminal; the same session also stays live on your phone.
+  With --no-sync, terminal turns stay off the phone until you run /sync in the chat.
+`)
+        process.exit(0)
+      }
+
+      let startedBy: 'daemon' | 'terminal' | undefined = undefined;
+      let verbose = false;
+      let noSync = false;
+      let resumeAcpSessionId: string | undefined;
+      let sessionName: string | undefined;
+      const traexArgs: string[] = ['traex'];
+      for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--started-by') {
+          startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--happy-starting-mode') {
+          i++;
+        } else if (args[i] === '--resume') {
+          resumeAcpSessionId = args[++i];
+          if (!resumeAcpSessionId) {
+            throw new Error('TraeX resume requires a session ID: happy traex --resume <traex-session-id>');
+          }
+        } else if (args[i] === '--name') {
+          sessionName = args[++i];
+          if (!sessionName) {
+            throw new Error('Session name requires a value: happy traex --name <name>');
+          }
+        } else if (args[i] === '--verbose') {
+          verbose = true;
+        } else if (args[i] === '--no-sync') {
+          noSync = true;
+        } else {
+          traexArgs.push(args[i]);
+        }
+      }
+
+      const resolved = resolveAcpAgentConfig(traexArgs);
+      const { credentials } = await authAndSetupMachineIfNeeded();
+      await ensureDaemonRunning()
+
+      await runAcp({
+        credentials,
+        startedBy,
+        verbose,
+        noSync,
+        agentName: resolved.agentName,
+        command: resolved.command,
+        args: resolved.args,
+        resumeAcpSessionId,
+        sessionName,
       });
     } catch (error) {
       console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
@@ -436,7 +620,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         gatewayPassword,
       });
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -449,11 +633,26 @@ Conversation history is preserved on the server, but in-flight tool calls are in
 
       let startedBy: 'daemon' | 'terminal' | undefined = undefined;
       let verbose = false;
+      let noSync = false;
+      let resumeConversationId: string | undefined;
+      let sessionName: string | undefined;
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--started-by') {
           startedBy = args[++i] as 'daemon' | 'terminal';
+        } else if (args[i] === '--name') {
+          sessionName = args[++i];
+          if (!sessionName) {
+            throw new Error('Session name requires a value: happy agy --name <name>');
+          }
+        } else if (args[i] === '--resume') {
+          resumeConversationId = args[++i];
+          if (!resumeConversationId) {
+            throw new Error('Agy resume requires a conversation ID: happy agy --resume <agy-conversation-id>');
+          }
         } else if (args[i] === '--verbose') {
           verbose = true;
+        } else if (args[i] === '--no-sync') {
+          noSync = true;
         }
       }
 
@@ -464,9 +663,12 @@ Conversation history is preserved on the server, but in-flight tool calls are in
         credentials,
         startedBy,
         verbose,
+        noSync,
+        resumeConversationId,
+        sessionName,
       });
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -479,7 +681,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleAuthCommand(['logout']);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -491,7 +693,7 @@ Conversation history is preserved on the server, but in-flight tool calls are in
     try {
       await handleNotifyCommand(args.slice(1));
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }
@@ -580,14 +782,14 @@ Conversation history is preserved on the server, but in-flight tool calls are in
       try {
         await install()
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+        console.error(chalk.red('Error:'), describeError(error))
         process.exit(1)
       }
     } else if (daemonSubcommand === 'uninstall') {
       try {
         await uninstall()
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+        console.error(chalk.red('Error:'), describeError(error))
         process.exit(1)
       }
     } else {
@@ -611,13 +813,18 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
     return;
   } else {
 
-    // If the first argument is claude, remove it
-    if (args.length > 0 && args[0] === 'claude') {
+    // If the first argument is claude, remove it. Treat `happy claude` as the
+    // explicit Happy-controlled remote Claude entrypoint, while bare `happy`
+    // keeps its historical local-first Claude behavior.
+    const explicitClaudeSubcommand = args.length > 0 && args[0] === 'claude';
+    if (explicitClaudeSubcommand) {
       args.shift()
     }
 
     // Parse command line arguments for main command
-    const options: StartOptions = {}
+    const options: StartOptions = explicitClaudeSubcommand
+      ? { startingMode: 'remote' }
+      : {}
     let showHelp = false
     let showVersion = false
     let chromeOverride: boolean | undefined = undefined  // Track explicit --chrome or --no-chrome
@@ -651,6 +858,12 @@ ${chalk.bold('To clean up runaway processes:')} Use ${chalk.cyan('happy doctor c
         options.effort = z.enum(['low', 'medium', 'high', 'xhigh', 'max']).parse(args[++i])
       } else if (arg === '--started-by') {
         options.startedBy = args[++i] as 'daemon' | 'terminal'
+      } else if (arg === '--name') {
+        options.sessionName = args[++i]
+        if (!options.sessionName) {
+          console.error(chalk.red('Session name requires a value: happy --name <name>'))
+          process.exit(1)
+        }
       } else if (arg === '--js-runtime') {
         const runtime = args[++i]
         if (runtime !== 'node' && runtime !== 'bun') {
@@ -713,9 +926,12 @@ ${chalk.bold('happy')} - Claude Code On the Go
 
 ${chalk.bold('Usage:')}
   happy [options]         Start Claude with mobile control
+  happy claude [options]  Start Claude remote chat with mobile control
   happy auth              Manage authentication
   happy resume            Resume a previous Happy session by Happy session ID
   happy codex             Start Codex mode
+  happy kimi              Start Kimi CLI mode (ACP)
+  happy traex             Start TraeX CLI mode (ACP)
   happy gemini            Start Gemini mode (ACP) [deprecated — use agy]
   happy agy               Start agy (Antigravity CLI) mode
   happy acp               Start a generic ACP-compatible agent
@@ -728,15 +944,19 @@ ${chalk.bold('Usage:')}
 
 ${chalk.bold('Examples:')}
   happy                    Start session
+  happy claude             Start shared terminal/mobile Claude chat
   happy resume cmmij8      Resume a previous session by Happy session ID
   happy --yolo             Start with bypassing permissions
                             happy sugar for --dangerously-skip-permissions
   happy --chrome           Enable Chrome browser access for this session
   happy --no-chrome        Disable Chrome even if default is on
   happy --no-sandbox       Disable Happy sandbox for this session
+  happy --name "Release"   Set a custom Happy session name
   happy --js-runtime bun   Use bun instead of node to spawn Claude Code
   happy --claude-env ANTHROPIC_BASE_URL=http://127.0.0.1:3456
                            Use a custom API endpoint (e.g., claude-code-router)
+  happy kimi               Start Kimi via its ACP server
+  happy traex              Start TraeX via its ACP server
   happy acp gemini         Start Gemini via generic ACP runner
   happy acp -- opencode --acp
                            Start a custom ACP command
@@ -782,7 +1002,7 @@ ${chalk.bold.cyan('Claude Code Options (from `claude --help`):')}
     try {
       await runClaude(credentials, options);
     } catch (error) {
-      console.error(chalk.red('Error:'), error instanceof Error ? error.message : 'Unknown error')
+      console.error(chalk.red('Error:'), describeError(error))
       if (process.env.DEBUG) {
         console.error(error)
       }

@@ -1,6 +1,6 @@
 import type { Metadata } from './storageTypes';
 
-export type ProviderIconKind = 'codex' | 'claude' | 'grok' | 'kimi' | 'generic';
+export type ProviderIconKind = 'codex' | 'claude' | 'grok' | 'kimi' | 'traex' | 'generic';
 
 export type RigModelDescriptor = {
     key: string;
@@ -47,6 +47,7 @@ export function getProviderIconKind(kind: string | null | undefined): ProviderIc
         case 'claude': return 'claude';
         case 'grok': return 'grok';
         case 'kimi': return 'kimi';
+        case 'traex': return 'traex';
         default: return 'generic';
     }
 }

@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { ApiClient } from '@/api/api';
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
-import { AgentGoalStatus, AgentState, Metadata } from '@/api/types';
+import { AgentGoalStatus, AgentState, Metadata, type UserMessage } from '@/api/types';
+import { createEnvelope } from '@slopus/happy-wire';
 import packageJson from '../../package.json';
 import { Credentials, readSettings } from '@/persistence';
 import { EnhancedMode, PermissionMode } from './loop';
@@ -53,6 +54,7 @@ export interface StartOptions {
     claudeArgs?: string[]
     startedBy?: 'daemon' | 'terminal'
     noSandbox?: boolean
+    sessionName?: string
     /** JavaScript runtime to use for spawning Claude Code (default: 'node') */
     jsRuntime?: JsRuntime
 }
@@ -148,6 +150,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         flavor: 'claude',
         sandbox: sandboxConfig?.enabled ? sandboxConfig : null,
         dangerouslySkipPermissions,
+        ...(options.sessionName?.trim() ? { name: options.sessionName.trim() } : {}),
         ...(forkedFromSessionId ? { parentSessionId: forkedFromSessionId } : {}),
         ...(forkedFromMessageId ? { forkedFromMessageId } : {}),
         ...(isSideChat ? { isSideChat: true } : {}),
@@ -653,7 +656,7 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         session.trackAttachmentDownload(downloadPromise);
     });
 
-    session.onUserMessage(async (message) => {
+    const handleUserMessage = async (message: UserMessage, source: 'app' | 'terminal') => {
 
         // Stamp the prompt so the remote-mode JSONL scanner can dedupe
         // it later — the SDK is about to write this same text to disk
@@ -661,10 +664,20 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         if (message?.content?.text) {
             recordAppPrompt(message.content.text);
         }
+        if (source === 'app') {
+            currentSession?.showRemotePrompt(message.content.text);
+        } else {
+            session.sendSessionProtocolMessage(createEnvelope('user', {
+                t: 'text',
+                text: message.content.text,
+            }));
+        }
 
         // Claim every file attachment that arrived strictly before this text.
         // New file events from this point on belong to the next user message.
-        const attachmentsForThisMessage = await session.drainAttachmentsForUserMessage();
+        const attachmentsForThisMessage = source === 'app'
+            ? await session.drainAttachmentsForUserMessage()
+            : [];
 
         // Resolve permission mode from meta - pass through as-is, mapping happens at SDK boundary
         let messagePermissionMode: PermissionMode | undefined = currentPermissionMode;
@@ -833,7 +846,9 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
         // Push with resolved permission mode, model, system prompts, and tools
         messageQueue.push(message.content.text, currentEnhancedMode(), attachmentsForThisMessage);
         logger.debugLargeJson('User message pushed to queue:', message)
-    });
+    };
+
+    session.onUserMessage((message) => handleUserMessage(message, 'app'));
 
     // Setup signal handlers for graceful shutdown
     //
@@ -957,6 +972,11 @@ export async function runClaude(credentials: Credentials, options: StartOptions 
             currentSession = sessionInstance;
         },
         onAbort: resetCurrentModeDefaults,
+        submitTerminalMessage: (text) => handleUserMessage({
+            role: 'user',
+            content: { type: 'text', text },
+            meta: { sentFrom: 'cli' },
+        }, 'terminal'),
         mcpServers: {
             'happy': {
                 type: 'http' as const,

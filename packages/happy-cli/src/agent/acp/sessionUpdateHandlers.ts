@@ -165,8 +165,9 @@ export function handleAgentMessageChunk(
     return { handled: false };
   }
 
-  // Filter out "thinking" messages (start with **...**)
-  const isThinking = /^\*\*[^*]+\*\*\n/.test(text);
+  // Only the agent's transport can tell bold-led thinking summaries (Gemini)
+  // from ordinary answer paragraphs that happen to start with a bold header.
+  const isThinking = ctx.transport.isThinkingMessageChunk?.(text) === true;
 
   if (isThinking) {
     ctx.emit({

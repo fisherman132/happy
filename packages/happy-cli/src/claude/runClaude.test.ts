@@ -128,6 +128,7 @@ async function startRemoteRunClaudeHarness(opts: {
             metadata = updater(metadata);
         }),
         sendClaudeSessionMessage: vi.fn(),
+        sendSessionProtocolMessage: vi.fn(),
         onUserMessage: vi.fn(),
         onFileEvent: vi.fn(),
         on: vi.fn(),
@@ -182,7 +183,11 @@ async function startRemoteRunClaudeHarness(opts: {
     if (!scannerOptions || !loopOptions) {
         throw new Error('runClaude harness did not start');
     }
-    const runtimeSession = { thinking: false, cleanup: vi.fn() };
+    const runtimeSession = {
+        thinking: false,
+        cleanup: vi.fn(),
+        showRemotePrompt: vi.fn(),
+    };
     loopOptions.onSessionReady(runtimeSession);
     const goalActionHandler = registerHandler.mock.calls.find(([method]) => method === 'goal-action')?.[1];
 
@@ -840,6 +845,35 @@ describe('runClaude remote JSONL scanner', () => {
             model: 'claude-fable-5-20260115',
             effort: 'high',
         });
+
+        await harness.finish();
+    });
+
+    it('queues terminal and phone prompts in the same Claude conversation', async () => {
+        const harness = await startRemoteRunClaudeHarness();
+        const userMessageHandler = harness.sessionClient.onUserMessage.mock.calls[0][0];
+
+        await userMessageHandler({
+            role: 'user',
+            content: { type: 'text', text: 'from phone' },
+            meta: { model: 'claude-fable-5-20260115', effort: 'high' },
+        });
+        await harness.loopOptions.submitTerminalMessage('from terminal');
+
+        expect(harness.loopOptions.messageQueue.queue.map((item: { message: string }) => item.message)).toEqual([
+            'from phone',
+            'from terminal',
+        ]);
+        expect(harness.loopOptions.messageQueue.queue[1].mode).toMatchObject({
+            model: 'claude-fable-5-20260115',
+            effort: 'high',
+        });
+        expect(harness.runtimeSession.showRemotePrompt).toHaveBeenCalledWith('from phone');
+        expect(harness.sessionClient.sendSessionProtocolMessage).toHaveBeenCalledTimes(1);
+        expect(harness.sessionClient.sendSessionProtocolMessage).toHaveBeenCalledWith(expect.objectContaining({
+            role: 'user',
+            ev: { t: 'text', text: 'from terminal' },
+        }));
 
         await harness.finish();
     });

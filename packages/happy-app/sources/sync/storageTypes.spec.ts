@@ -36,9 +36,13 @@ describe('MetadataSchema', () => {
             ...rigMetadataFixture,
             rigMetadataVersion: 2,
             futureCapability: { supported: true },
+            kimiSessionId: 'kimi-session-1',
+            traexSessionId: 'traex-session-1',
         });
         expect(metadata.client?.id).toBe('rig');
         expect(metadata.models).toHaveLength(2);
+        expect(metadata.kimiSessionId).toBe('kimi-session-1');
+        expect(metadata.traexSessionId).toBe('traex-session-1');
         expect(metadata.activity?.subagents.queued).toBe(2);
         expect((metadata as any).futureCapability).toEqual({ supported: true });
     });
@@ -62,6 +66,8 @@ describe('MachineMetadataSchema', () => {
                 gemini: false,
                 openclaw: false,
                 agy: false,
+                kimi: true,
+                traex: true,
                 rig: true,
                 detectedAt: 123,
             },
@@ -101,6 +107,8 @@ describe('MachineMetadataSchema', () => {
         });
 
         expect(metadata.cliAvailability?.rig).toBe(true);
+        expect(metadata.cliAvailability?.kimi).toBe(true);
+        expect(metadata.cliAvailability?.traex).toBe(true);
         expect(metadata.defaults?.providerId).toBe('codex');
         expect(metadata.models?.[0]?.thinkingLevels).toEqual(['low', 'high']);
         expect((metadata as any).futureRigMachineField).toEqual({ enabled: true });
@@ -122,6 +130,8 @@ describe('MachineMetadataSchema', () => {
             gemini: false,
             openclaw: false,
             agy: false,
+            kimi: false,
+            traex: false,
             rig: true,
             detectedAt: 123,
         },

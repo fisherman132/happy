@@ -167,6 +167,66 @@ describe('buildResumeLaunch', () => {
         });
     });
 
+    it('builds a Kimi resume command', () => {
+        expect(buildResumeLaunch({
+            id: 'session-kimi',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'kimi',
+                kimiSessionId: 'kimi-session-123',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['kimi', '--resume', 'kimi-session-123'],
+        });
+    });
+
+    it('builds a TraeX resume command', () => {
+        expect(buildResumeLaunch({
+            id: 'session-traex',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'traex',
+                traexSessionId: 'traex-session-123',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['traex', '--resume', 'traex-session-123'],
+        });
+    });
+
+    it('builds an Antigravity resume command', () => {
+        expect(buildResumeLaunch({
+            id: 'session-agy',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'agy',
+                agyConversationId: 'agy-conversation-123',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toEqual({
+            cwd: '/tmp/repo',
+            args: ['agy', '--resume', 'agy-conversation-123'],
+        });
+    });
+
     it('rejects unsupported flavors', () => {
         expect(() => buildResumeLaunch({
             id: 'session-3',
@@ -181,6 +241,38 @@ describe('buildResumeLaunch', () => {
                 happyToolsDir: '/tmp/happy/tools',
             },
         })).toThrow('Happy session session-3 uses unsupported flavor "gemini".');
+    });
+
+    it('rejects Kimi sessions without an ACP session ID', () => {
+        expect(() => buildResumeLaunch({
+            id: 'session-4',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'kimi',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toThrow('Happy session session-4 is missing its Kimi session ID.');
+    });
+
+    it('rejects TraeX sessions without an ACP session ID', () => {
+        expect(() => buildResumeLaunch({
+            id: 'session-traex-missing',
+            active: false,
+            metadata: {
+                path: '/tmp/repo',
+                flavor: 'traex',
+                host: 'localhost',
+                homeDir: '/tmp',
+                happyHomeDir: '/tmp/.happy',
+                happyLibDir: '/tmp/happy',
+                happyToolsDir: '/tmp/happy/tools',
+            },
+        })).toThrow('Happy session session-traex-missing is missing its TraeX session ID.');
     });
 });
 

@@ -1,6 +1,8 @@
 import { onShutdown } from "@/utils/shutdown";
 import { Fastify } from "./types";
-import { buildMachineActivityEphemeral, ClientConnection, eventRouter } from "@/app/events/eventRouter";
+import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, ClientConnection, eventRouter } from "@/app/events/eventRouter";
+import { db } from "@/storage/db";
+import { activityCache } from "@/app/presence/sessionCache";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-streams-adapter";
 import { Redis } from "ioredis";
@@ -171,6 +173,10 @@ export function startSocket(app: Fastify) {
             });
         }
 
+        if (connection.connectionType === 'session-scoped' && sessionId) {
+            activityCache.resumeSessionUpdates(sessionId);
+        }
+
         // Track app focus state for push notification routing.
         // State lives on socket.data — no external storage needed.
         // Read initial state from handshake to close the race window between
@@ -184,7 +190,7 @@ export function startSocket(app: Fastify) {
             socket.data.appState = data?.state === 'active' ? 'active' : 'background';
         });
 
-        socket.on('disconnect', () => {
+        socket.on('disconnect', async () => {
             websocketEventsCounter.inc({ event_type: 'disconnect', ...labels });
 
             // Cleanup connections
@@ -195,12 +201,44 @@ export function startSocket(app: Fastify) {
 
             // Broadcast daemon offline status
             if (connection.connectionType === 'machine-scoped') {
+                try {
+                    await db.machine.updateMany({
+                        where: { id: connection.machineId, accountId: userId },
+                        data: { active: false, lastActiveAt: new Date() }
+                    });
+                } catch (err) {
+                    log({ module: 'websocket', level: 'error' }, `Failed to mark machine ${connection.machineId} inactive: ${err}`);
+                }
                 const machineActivity = buildMachineActivityEphemeral(connection.machineId, false, Date.now());
                 eventRouter.emitEphemeral({
                     userId,
                     payload: machineActivity,
                     recipientFilter: { type: 'user-scoped-only' }
                 });
+            }
+
+            // Broadcast session offline status
+            if (connection.connectionType === 'session-scoped') {
+                const sid = connection.sessionId;
+                try {
+                    const sockets = await io.in(`user:${userId}:session:${sid}`).fetchSockets();
+                    const remaining = sockets.filter(s => s.id !== socket.id);
+                    if (remaining.length === 0) {
+                        activityCache.clearSessionUpdates(sid);
+                        await db.session.updateMany({
+                            where: { id: sid, accountId: userId },
+                            data: { active: false, lastActiveAt: new Date() }
+                        });
+                        const sessionActivity = buildSessionActivityEphemeral(sid, false, Date.now(), false);
+                        eventRouter.emitEphemeral({
+                            userId,
+                            payload: sessionActivity,
+                            recipientFilter: { type: 'user-scoped-only' }
+                        });
+                    }
+                } catch (err) {
+                    log({ module: 'websocket', level: 'error' }, `Failed to handle session disconnect for ${sid}: ${err}`);
+                }
             }
         });
 

@@ -46,6 +46,7 @@ import type {
     InputItem,
     ReasoningEffort,
     McpServerElicitationRequestResponse,
+    ModelListResponse,
 } from './codexAppServerTypes';
 import type { SandboxConfig } from '@/persistence';
 import { initializeSandbox, wrapForMcpTransport } from '@/sandbox/manager';
@@ -1218,6 +1219,14 @@ export class CodexAppServerClient {
         this.completedTurnIds.clear();
         this.rawFileChangesByItemId.clear();
         this.rawSubagentActivitySignaturesByItemId.clear();
+    }
+
+    async listModels(): Promise<ModelListResponse> {
+        return await this.request('model/list', {
+            cursor: null,
+            limit: 100,
+            includeHidden: false,
+        }) as ModelListResponse;
     }
 
     // ─── JSON-RPC transport ─────────────────────────────────────

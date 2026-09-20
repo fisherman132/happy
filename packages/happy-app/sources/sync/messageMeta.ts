@@ -3,7 +3,7 @@ import type { Settings } from './settings';
 import type { MessageMeta } from './typesMessageMeta';
 import { resolveSessionState } from './sessionState';
 import { getAgentDefaultOverride, resolveAgentDefaultConfig, retirePermissionMode } from './agentDefaults';
-import { permissionModeSupportedByCli } from '@/components/modelModeOptions';
+import { isAcpCatalogDrivenFlavor, permissionModeSupportedByCli } from '@/components/modelModeOptions';
 import type { PermissionModeKey } from '@/components/PermissionModeSelector';
 import {
     getRigCurrentModel,
@@ -44,6 +44,46 @@ export type MessageModeMeta = {
     modelProviderId?: string;
     effort?: string | null;
 };
+
+type MetadataModeOption = NonNullable<NonNullable<Session['metadata']>['operatingModes']>[number];
+type MetadataThoughtLevelOption = NonNullable<NonNullable<Session['metadata']>['thoughtLevels']>[number];
+type MetadataModelOption = NonNullable<NonNullable<Session['metadata']>['models']>[number];
+
+function modeExists(
+    options: MetadataModeOption[] | MetadataThoughtLevelOption[] | null | undefined,
+    key: string | null | undefined,
+): boolean {
+    return !!key && options?.some((option) => option.code === key) === true;
+}
+
+function modelExists(
+    models: MetadataModelOption[] | null | undefined,
+    key: string | null | undefined,
+): boolean {
+    return !!key && models?.some((model) => model.code === key) === true;
+}
+
+function resolveMetadataEffort(
+    session: Pick<Session, 'effortLevel' | 'metadata' | 'modelMode'>,
+    selectedModelKey: string | null | undefined,
+): string | null {
+    const localEffort = session.effortLevel;
+    const model = session.metadata?.models?.find((candidate) => candidate.code === selectedModelKey);
+    if (localEffort && model?.thinkingLevels?.includes(localEffort)) {
+        return localEffort;
+    }
+    if (model?.defaultThinkingLevel) {
+        return model.defaultThinkingLevel;
+    }
+    if (localEffort && modeExists(session.metadata?.thoughtLevels, localEffort)) {
+        return localEffort;
+    }
+    const currentThoughtLevel = session.metadata?.currentThoughtLevelCode;
+    if (modeExists(session.metadata?.thoughtLevels, currentThoughtLevel)) {
+        return currentThoughtLevel ?? null;
+    }
+    return null;
+}
 
 /**
  * The session or a saved default carries a permission mode the session's CLI
@@ -126,10 +166,41 @@ export function resolveMessageModeMeta(
         const defaults = resolveAgentDefaultConfig(settings?.agentDefaultOverrides, flavor, cliVersion);
         meta.permissionMode = supported(retirePermissionMode(session.permissionMode ?? defaults.permissionMode));
 
-        const modelMode = session.modelMode ?? defaults.modelMode;
+        const modelMode = session.modelMode
+            ?? (flavor === 'codex' ? session.metadata?.currentModelCode : undefined)
+            ?? defaults.modelMode;
         meta.model = modelMode === 'default' ? null : modelMode;
 
         meta.effort = session.effortLevel ?? defaults.effortLevel;
+        return meta;
+    }
+
+    if (isAcpCatalogDrivenFlavor(flavor)) {
+        const defaults = resolveAgentDefaultConfig(settings?.agentDefaultOverrides, flavor, cliVersion);
+        const preferredPermissionMode = session.permissionMode
+            ?? agentOverrides.permissionMode
+            ?? defaults.permissionMode;
+        const permissionMode = session.metadata?.operatingModes?.length && !modeExists(session.metadata.operatingModes, preferredPermissionMode)
+            ? session.metadata.currentOperatingModeCode
+            : preferredPermissionMode;
+        if (permissionMode) meta.permissionMode = supported(retirePermissionMode(permissionMode));
+
+        const preferredModelMode = session.modelMode
+            ?? agentOverrides.modelMode
+            ?? defaults.modelMode;
+        const modelMode = session.metadata?.models?.length && !modelExists(session.metadata.models, preferredModelMode)
+            ? session.metadata.currentModelCode
+            : preferredModelMode;
+        if (modelMode !== undefined) {
+            meta.model = modelMode === 'default' ? null : modelMode;
+        }
+
+        const effort = session.effortLevel
+            ?? agentOverrides.effortLevel
+            ?? resolveMetadataEffort(session, modelMode);
+        if (effort !== null && effort !== undefined) {
+            meta.effort = effort;
+        }
         return meta;
     }
 

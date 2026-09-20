@@ -126,8 +126,8 @@ vi.mock('@/components/ItemList', async () => {
 });
 vi.mock('@/components/CodeView', () => ({ CodeView: () => null }));
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }));
-vi.mock('@/modal', () => ({ Modal: { alert: vi.fn() } }));
-vi.mock('@/sync/ops', () => ({ sessionArchive: vi.fn(), sessionKill: vi.fn(), sessionDelete: vi.fn() }));
+vi.mock('@/modal', () => ({ Modal: { alert: vi.fn(), prompt: vi.fn() } }));
+vi.mock('@/sync/ops', () => ({ sessionArchive: vi.fn(), sessionKill: vi.fn(), sessionDelete: vi.fn(), sessionSetName: vi.fn() }));
 vi.mock('@/hooks/useWorktreeCleanup', () => ({ maybeCleanupWorktree: vi.fn() }));
 vi.mock('@/hooks/useHappyAction', () => ({ useHappyAction: (action: unknown) => [false, action] }));
 vi.mock('@/hooks/useSessionQuickActions', () => ({ useSessionQuickActions: () => ({}) }));

@@ -173,7 +173,7 @@ export interface SpawnSessionOptions {
     directory: string;
     approvedNewDirectoryCreation?: boolean;
     token?: string;
-    agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'rig';
+    agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'kimi' | 'traex' | 'rig';
     permissionMode?: string;
     modelMode?: string;
     effortLevel?: string;
@@ -275,7 +275,7 @@ export async function machineSpawnNewSession(options: SpawnSessionOptions): Prom
             directory: string
             approvedNewDirectoryCreation?: boolean,
             token?: string,
-            agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'rig',
+            agent?: 'codex' | 'claude' | 'gemini' | 'openclaw' | 'agy' | 'kimi' | 'traex' | 'rig',
             permissionMode?: string,
             modelMode?: string,
             effortLevel?: string,
@@ -546,15 +546,15 @@ function buildResumeFallback(sessionId: string, machineId: string): { fallback?:
     };
 }
 
-export async function machineResumeSession(options: ResumeSessionOptions & { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> {
-    const { machineId, sessionId, model, permissionMode } = options;
+export async function machineResumeSession(options: ResumeSessionOptions & { model?: string; permissionMode?: string; effort?: string | null }): Promise<SpawnSessionResult> {
+    const { machineId, sessionId, model, permissionMode, effort } = options;
 
     try {
         const { fallback, reason } = buildResumeFallback(sessionId, machineId);
-        const result = await apiSocket.machineRPC<SpawnSessionResult | { error: string }, { sessionId: string; model?: string; permissionMode?: string; fallback?: unknown; fallbackReason?: string }>(
+        const result = await apiSocket.machineRPC<SpawnSessionResult | { error: string }, { sessionId: string; model?: string; permissionMode?: string; effort?: string | null; fallback?: unknown; fallbackReason?: string }>(
             machineId,
             'resume-happy-session',
-            { sessionId, model, permissionMode, fallback, fallbackReason: reason },
+            { sessionId, model, permissionMode, effort, fallback, fallbackReason: reason },
         );
         if ('error' in result) {
             return { type: 'error', errorMessage: result.error };
@@ -800,6 +800,50 @@ async function sessionUpdateAgentModesMetadata(
     throw new Error(`Failed to update session metadata after ${maxRetries} retries due to version conflicts`);
 }
 
+async function sessionUpdateMetadataPatch(
+    sessionId: string,
+    applyPatch: (metadata: Record<string, unknown>) => Record<string, unknown>,
+    maxRetries: number = 3,
+): Promise<void> {
+    const encryption = sync.encryption.getSessionEncryption(sessionId);
+    const session = storage.getState().sessions[sessionId];
+    if (!encryption || !session?.metadata) {
+        throw new Error(`Session ${sessionId} is not ready for metadata updates`);
+    }
+
+    let currentVersion = session.metadataVersion;
+    let currentMetadata: Record<string, unknown> = applyPatch({ ...session.metadata });
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const encrypted = await encryption.encryptRaw(currentMetadata);
+        const result = await apiSocket.emitWithAck<{
+            result: 'success' | 'version-mismatch' | 'error';
+            version?: number;
+            metadata?: string;
+        }>('update-metadata', {
+            sid: sessionId,
+            metadata: encrypted,
+            expectedVersion: currentVersion
+        });
+
+        if (result.result === 'success') {
+            return;
+        }
+        if (result.result === 'version-mismatch') {
+            currentVersion = result.version!;
+            const latest = await encryption.decryptRaw(result.metadata!);
+            if (!latest) {
+                throw new Error('Failed to decrypt latest session metadata');
+            }
+            currentMetadata = applyPatch({ ...latest });
+            continue;
+        }
+        throw new Error('Failed to update session metadata');
+    }
+
+    throw new Error(`Failed to update session metadata after ${maxRetries} retries due to version conflicts`);
+}
+
 /**
  * Apply a per-session model / effort pick: updates local state immediately for
  * a snappy UI and pushes the pick into synced session metadata so other
@@ -850,6 +894,36 @@ export function sessionSetAgentModes(sessionId: string, patch: SessionAgentModes
         })
         .finally(() => {
             clearAgentModePushPending(sessionId, changedFields);
+        });
+}
+
+export function sessionSetName(sessionId: string, name: string | null): void {
+    const state = storage.getState();
+    const session = state.sessions[sessionId];
+    const nextName = name?.trim() ? name.trim() : null;
+    const currentName = session?.metadata?.name?.trim() || null;
+    if (!session?.metadata || currentName === nextName) {
+        return;
+    }
+
+    const nextMetadata = { ...session.metadata };
+    if (nextName) {
+        nextMetadata.name = nextName;
+    } else {
+        delete nextMetadata.name;
+    }
+    state.applySessionMetadata(sessionId, nextMetadata);
+
+    sessionUpdateMetadataPatch(sessionId, (metadata) => {
+        if (nextName) {
+            return { ...metadata, name: nextName };
+        }
+        const next = { ...metadata };
+        delete next.name;
+        return next;
+    })
+        .catch((error) => {
+            console.error(`Failed to sync session name for session ${sessionId}`, error);
         });
 }
 

@@ -102,6 +102,60 @@ describe('resolveMessageModeMeta', () => {
         });
     });
 
+    it('uses Kimi ACP-published mode and model before default placeholders', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: null,
+            effortLevel: null,
+            metadata: {
+                flavor: 'kimi',
+                currentOperatingModeCode: 'ask',
+                operatingModes: [{ code: 'ask', value: 'Ask', description: null }],
+                currentModelCode: 'kimi-k2-thinking',
+                models: [{
+                    code: 'kimi-k2-thinking',
+                    value: 'Kimi K2 Thinking',
+                    description: null,
+                    thinkingLevels: ['low', 'high'],
+                    defaultThinkingLevel: 'high',
+                }],
+            },
+        } as any);
+
+        expect(meta).toEqual({
+            permissionMode: 'ask',
+            model: 'kimi-k2-thinking',
+            effort: 'high',
+        });
+    });
+
+    it('uses TraeX ACP-published mode and model before default placeholders', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: null,
+            effortLevel: null,
+            metadata: {
+                flavor: 'traex',
+                currentOperatingModeCode: 'ask',
+                operatingModes: [{ code: 'ask', value: 'Ask', description: null }],
+                currentModelCode: 'gpt-5.6-sol',
+                models: [{
+                    code: 'gpt-5.6-sol',
+                    value: 'GPT-5.6 Sol',
+                    description: null,
+                    thinkingLevels: ['low', 'high'],
+                    defaultThinkingLevel: 'high',
+                }],
+            },
+        } as any);
+
+        expect(meta).toEqual({
+            permissionMode: 'ask',
+            model: 'gpt-5.6-sol',
+            effort: 'high',
+        });
+    });
+
     it('uses Default for an unset Codex code default on an old CLI', () => {
         const meta = resolveMessageModeMeta({
             permissionMode: null,
@@ -122,6 +176,25 @@ describe('resolveMessageModeMeta', () => {
         } as any);
 
         expect(meta.permissionMode).toBe('auto');
+    });
+
+    it('uses the Codex model selected from another client before local defaults', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: null,
+            effortLevel: null,
+            metadata: {
+                flavor: 'codex',
+                version: '1.2.4',
+                currentModelCode: 'gpt-5.6-terra',
+            },
+        } as any);
+
+        expect(meta).toEqual({
+            permissionMode: 'auto',
+            model: 'gpt-5.6-terra',
+            effort: 'medium',
+        });
     });
 
     it('keeps an explicit Codex YOLO override on an old CLI', () => {
@@ -311,6 +384,68 @@ describe('resolveMessageModeMeta', () => {
             permissionMode: 'auto',
             model: 'my-workspace-model',
             effort: 'medium',
+        });
+    });
+
+    it('sends explicit Kimi ACP mode, model, and effort selections', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: 'auto',
+            modelMode: 'kimi-k2-thinking',
+            effortLevel: 'high',
+            metadata: {
+                flavor: 'kimi',
+                models: [
+                    {
+                        code: 'kimi-k2-thinking',
+                        value: 'Kimi K2 Thinking',
+                        description: null,
+                        thinkingLevels: ['low', 'high'],
+                    },
+                ],
+                operatingModes: [
+                    { code: 'auto', value: 'Auto', description: null },
+                ],
+            },
+        } as any);
+
+        expect(meta).toEqual({
+            permissionMode: 'auto',
+            model: 'kimi-k2-thinking',
+            effort: 'high',
+        });
+    });
+
+    it('falls back to ACP-published current Kimi selections when defaults are ambient', () => {
+        const meta = resolveMessageModeMeta({
+            permissionMode: null,
+            modelMode: null,
+            effortLevel: null,
+            metadata: {
+                flavor: 'kimi',
+                currentOperatingModeCode: 'ask',
+                currentModelCode: 'kimi-k2-thinking',
+                currentThoughtLevelCode: 'low',
+                models: [
+                    {
+                        code: 'kimi-k2-thinking',
+                        value: 'Kimi K2 Thinking',
+                        description: null,
+                    },
+                ],
+                operatingModes: [
+                    { code: 'ask', value: 'Ask', description: null },
+                ],
+                thoughtLevels: [
+                    { code: 'low', value: 'Low', description: null },
+                    { code: 'high', value: 'High', description: null },
+                ],
+            },
+        } as any);
+
+        expect(meta).toEqual({
+            permissionMode: 'ask',
+            model: 'kimi-k2-thinking',
+            effort: 'low',
         });
     });
 

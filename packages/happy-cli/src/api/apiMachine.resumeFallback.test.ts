@@ -11,7 +11,18 @@ vi.mock('socket.io-client', () => ({ io: vi.fn(() => ({ on: vi.fn(), connect: vi
 vi.mock('@/configuration', () => ({ configuration: { serverUrl: 'http://127.0.0.1:3005', currentCliVersion: 'test' } }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), debugLargeJson: vi.fn() } }));
 vi.mock('@/modules/common/registerCommonHandlers', () => ({ registerCommonHandlers: vi.fn() }));
-vi.mock('@/utils/detectCLI', () => ({ detectCLIAvailability: vi.fn(() => ({ claude: false, codex: false, gemini: false, openclaw: false })) }));
+vi.mock('@/utils/detectCLI', () => ({
+    detectCLIAvailability: vi.fn(() => ({
+        claude: false,
+        codex: false,
+        gemini: false,
+        openclaw: false,
+        agy: false,
+        kimi: false,
+        traex: false,
+        detectedAt: 1,
+    }))
+}));
 vi.mock('@/utils/lidState', () => ({ shouldReconnect: vi.fn(() => true) }));
 vi.mock('@/resume/localHappyAgentAuth', () => ({
     detectResumeSupport: vi.fn(() => ({

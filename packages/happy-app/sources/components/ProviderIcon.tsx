@@ -26,6 +26,8 @@ export function ProviderIcon({ kind, size = 14 }: { kind?: string | null; size?:
         ? 'flash-outline'
         : mapped === 'kimi'
             ? 'moon-outline'
-            : 'sparkles-outline';
+            : mapped === 'traex'
+                ? 'code-slash-outline'
+                : 'sparkles-outline';
     return <Ionicons name={icon} size={size} color={theme.colors.textSecondary} />;
 }
