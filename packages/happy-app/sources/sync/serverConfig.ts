@@ -1,4 +1,5 @@
 import { MMKV } from 'react-native-mmkv';
+import { loadAppConfig } from './appConfig';
 
 // Separate MMKV instance for server config that persists across logouts
 const serverConfigStorage = new MMKV({ id: 'server-config' });
@@ -10,8 +11,10 @@ const DEFAULT_SERVER_URL = 'https://api.cluster-fluster.com';
 
 export function getServerUrl(): string {
     return serverConfigStorage.getString(SERVER_KEY) ||
+           loadAppConfig().serverUrl ||
            (globalThis as any).__HAPPY_CONFIG__?.serverUrl ||
            process.env.EXPO_PUBLIC_HAPPY_SERVER_URL ||
+           process.env.EXPO_PUBLIC_SERVER_URL ||
            DEFAULT_SERVER_URL;
 }
 
