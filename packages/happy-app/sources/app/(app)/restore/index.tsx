@@ -138,7 +138,7 @@ export default function Restore() {
             {authReady ? (
                 <View style={styles.qrFrame}>
                     <QRCode
-                        data={'happy:///account?' + encodeBase64(keypair.publicKey, 'base64url')}
+                        data={'happy://terminal?' + encodeBase64(keypair.publicKey, 'base64url')}
                         size={QR_SIZE}
                         foregroundColor={'black'}
                         backgroundColor={'white'}
