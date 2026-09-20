@@ -177,7 +177,7 @@ describe('AcpSessionManager text mapping', () => {
 });
 
 describe('AcpSessionManager tool mapping', () => {
-  it('maps tool-call to tool-call-start with generated call id', () => {
+  it('maps tool-call to tool-call-start with the ACP call id', () => {
     const mapper = new AcpSessionManager();
     const start = mapper.startTurn()[0];
 
@@ -191,7 +191,7 @@ describe('AcpSessionManager tool mapping', () => {
     expect(envelopes).toHaveLength(1);
     expect(envelopes[0].ev.t).toBe('tool-call-start');
     if (envelopes[0].ev.t === 'tool-call-start') {
-      expect(isCuid(envelopes[0].ev.call)).toBe(true);
+      expect(envelopes[0].ev.call).toBe('acp-call-1');
       expect(envelopes[0].ev.name).toBe('ReadFile');
       expect(envelopes[0].ev.title).toBe('ReadFile');
       expect(envelopes[0].ev.description).toContain('ReadFile');
@@ -247,7 +247,7 @@ describe('AcpSessionManager tool mapping', () => {
     }
   });
 
-  it('emits tool-call-end with generated call id for unknown tool result', () => {
+  it('emits tool-call-end with original call id for unknown tool result', () => {
     const mapper = new AcpSessionManager();
     mapper.startTurn();
     const envelope = mapper.mapMessage({
@@ -259,7 +259,28 @@ describe('AcpSessionManager tool mapping', () => {
 
     expect(envelope.ev.t).toBe('tool-call-end');
     if (envelope.ev.t === 'tool-call-end') {
-      expect(isCuid(envelope.ev.call)).toBe(true);
+      expect(envelope.ev.call).toBe('missing-call');
+    }
+  });
+
+  it('uses provider title and description when present', () => {
+    const mapper = new AcpSessionManager();
+    mapper.startTurn();
+
+    const envelope = mapper.mapMessage({
+      type: 'tool-call',
+      callId: 'call-raw',
+      toolName: 'execute',
+      title: 'Run tests',
+      description: 'pnpm test',
+      args: { command: 'pnpm test' },
+    })[0];
+
+    expect(envelope.ev.t).toBe('tool-call-start');
+    if (envelope.ev.t === 'tool-call-start') {
+      expect(envelope.ev.call).toBe('call-raw');
+      expect(envelope.ev.title).toBe('Run tests');
+      expect(envelope.ev.description).toBe('pnpm test');
     }
   });
 });
@@ -377,7 +398,7 @@ describe('AcpSessionManager id consistency', () => {
     expect(toolEnd).toBeDefined();
     if (toolStart?.ev.t === 'tool-call-start' && toolEnd?.ev.t === 'tool-call-end') {
       expect(toolStart.ev.call).toBe(toolEnd.ev.call);
-      expect(isCuid(toolStart.ev.call)).toBe(true);
+      expect(toolStart.ev.call).toBe('tool-1');
     }
 
     const allIds = envelopes.map((envelope) => envelope.id);

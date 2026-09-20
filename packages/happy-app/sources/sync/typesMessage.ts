@@ -22,6 +22,12 @@ export type ToolCall = {
         allowedTools?: string[];
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
         date?: number;
+        acpOptions?: Array<{
+            optionId: string;
+            name: string;
+            kind: string;
+        }>;
+        acpOptionId?: string;
     };
 }
 

@@ -4,9 +4,13 @@ const mocks = vi.hoisted(() => {
   const sessionHandlers = new Map<string, (params: any) => Promise<any> | any>();
   let userMessageHandler: ((message: any) => void) | null = null;
   let killHandler: (() => Promise<void>) | null = null;
+  let mockAgentState: Record<string, any> = {};
+  const mockPushSend = vi.fn();
 
   const mockSession = {
     sessionId: 'session-1',
+    api: { push: () => ({ sendSessionNotification: mockPushSend }) },
+    getMetadata: vi.fn(() => ({ path: '/tmp/happy', flavor: 'traex' })),
     onUserMessage: vi.fn((handler: (message: any) => void) => {
       userMessageHandler = handler;
     }),
@@ -18,8 +22,8 @@ const mocks = vi.hoisted(() => {
     sendSessionDeath: vi.fn(),
     flush: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
-    updateAgentState: vi.fn((handler: (state: Record<string, unknown>) => Record<string, unknown>) => {
-      handler({});
+    updateAgentState: vi.fn(async (handler: (state: Record<string, unknown>) => Record<string, unknown>) => {
+      mockAgentState = handler(mockAgentState);
     }),
     rpcHandlerManager: {
       registerHandler: vi.fn((name: string, handler: (params: any) => Promise<any> | any) => {
@@ -37,6 +41,7 @@ const mocks = vi.hoisted(() => {
     startSessionMessages: [] as any[],
     startSessionError: null as unknown,
     sendPromptError: null as Error | null,
+    sendPromptBlocker: null as Promise<void> | null,
     startSessionCalls: 0,
     cancelCalls: [] as string[],
     disposeCalls: 0,
@@ -63,6 +68,7 @@ const mocks = vi.hoisted(() => {
     terminalChat,
     mockReadSettings: vi.fn(async () => ({ machineId: 'machine-1', sandboxConfig: undefined })),
     mockApiCreate: vi.fn(),
+    mockPushSend,
     mockGetOrCreateMachine: vi.fn(async () => ({})),
     mockGetOrCreateSession: vi.fn(async () => ({ id: 'session-1' })),
     mockDeactivateSession: vi.fn(async () => true),
@@ -84,6 +90,10 @@ const mocks = vi.hoisted(() => {
     getKillHandler: () => killHandler,
     setKillHandler: (handler: (() => Promise<void>) | null) => {
       killHandler = handler;
+    },
+    getAgentState: () => mockAgentState,
+    setAgentState: (state: Record<string, any>) => {
+      mockAgentState = state;
     },
     mockSession,
     backendState,
@@ -192,6 +202,9 @@ vi.mock('./AcpBackend', () => ({
 
     async sendPrompt(sessionId: string, prompt: string) {
       mocks.backendState.prompts.push({ sessionId, prompt });
+      if (mocks.backendState.sendPromptBlocker) {
+        await mocks.backendState.sendPromptBlocker;
+      }
       if (mocks.backendState.sendPromptError) {
         throw mocks.backendState.sendPromptError;
       }
@@ -247,6 +260,7 @@ describe('runAcp', () => {
     mocks.sessionHandlers.clear();
     mocks.setUserMessageHandler(null);
     mocks.setKillHandler(null);
+    mocks.setAgentState({});
     mocks.terminalChat.enabled = false;
     mocks.terminalChat.instance = null;
     mocks.backendState.listeners = [];
@@ -257,15 +271,18 @@ describe('runAcp', () => {
     mocks.backendState.startSessionMessages = [];
     mocks.backendState.startSessionError = null;
     mocks.backendState.sendPromptError = null;
+    mocks.backendState.sendPromptBlocker = null;
     mocks.backendState.startSessionCalls = 0;
     mocks.backendState.cancelCalls = [];
     mocks.backendState.disposeCalls = 0;
     mocks.backendState.constructorArgs = null;
+    mocks.mockPushSend.mockClear();
 
     mocks.mockApiCreate.mockResolvedValue({
       getOrCreateMachine: mocks.mockGetOrCreateMachine,
       getOrCreateSession: mocks.mockGetOrCreateSession,
       deactivateSession: mocks.mockDeactivateSession,
+      push: () => ({ sendSessionNotification: mocks.mockPushSend }),
     });
     mocks.mockSetupOfflineReconnection.mockImplementation(() => ({
       session: mocks.mockSession,
@@ -431,6 +448,148 @@ describe('runAcp', () => {
 
     await mocks.getKillHandler()!();
     await runPromise;
+  });
+
+  it('surfaces ACP permission requests and resolves with the selected ACP option', async () => {
+    const runPromise = runAcp({
+      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+      agentName: 'traex',
+      command: 'traex',
+      args: ['acp', 'serve'],
+    });
+    const runOutcome = runPromise.then(() => null, (error: unknown) => error);
+
+    await vi.waitFor(() => {
+      expect(mocks.backendState.constructorArgs?.permissionHandler).toBeDefined();
+    });
+
+    const pending = mocks.backendState.constructorArgs.permissionHandler.handleToolCall(
+      'call-permission-1',
+      'Run command',
+      { command: 'touch ok' },
+      {
+        acpTitle: 'Run command',
+        acpKind: 'execute',
+        acpOptions: [
+          { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+        ],
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.getAgentState().requests?.['call-permission-1']).toMatchObject({
+        tool: 'Run command',
+        arguments: { command: 'touch ok' },
+        acpOptions: [
+          { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+        ],
+      });
+    });
+    expect(mocks.mockPushSend).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'permission',
+      data: expect.objectContaining({
+        sessionId: 'session-1',
+        requestId: 'call-permission-1',
+        provider: 'traex',
+      }),
+    }));
+    expect(consoleLines()).toEqual(expect.arrayContaining([
+      'traex is waiting for permission: Run command (id=call-permission-1) options=[Allow once (allow_once), Reject (reject_once)]',
+    ]));
+
+    const permissionRpc = mocks.sessionHandlers.get('permission');
+    expect(permissionRpc).toBeTypeOf('function');
+    await permissionRpc!({
+      id: 'call-permission-1',
+      approved: true,
+      decision: 'approved',
+      acpOptionId: 'allow-once',
+    });
+
+    await expect(pending).resolves.toEqual({
+      decision: 'approved',
+      acpOptionId: 'allow-once',
+    });
+    expect(mocks.getAgentState().requests?.['call-permission-1']).toBeUndefined();
+    expect(mocks.getAgentState().completedRequests?.['call-permission-1']).toMatchObject({
+      status: 'approved',
+      decision: 'approved',
+      acpOptionId: 'allow-once',
+    });
+
+    await mocks.getKillHandler()!();
+    expect(await runOutcome).toBeNull();
+  });
+
+  it('offers a terminal picker for local ACP permission requests', async () => {
+    mocks.terminalChat.enabled = true;
+    let releasePrompt!: () => void;
+    mocks.backendState.sendPromptBlocker = new Promise((resolve) => {
+      releasePrompt = resolve;
+    });
+    const runPromise = runAcp({
+      credentials: { token: 'token', encryption: { type: 'legacy', secret: new Uint8Array(32) } },
+      agentName: 'traex',
+      command: 'traex',
+      args: ['acp', 'serve'],
+    });
+    const runOutcome = runPromise.then(() => null, (error: unknown) => error);
+
+    await vi.waitFor(() => {
+      expect(mocks.terminalChat.instance).toBeTruthy();
+      expect(mocks.backendState.constructorArgs?.permissionHandler).toBeDefined();
+    });
+
+    mocks.terminalChat.instance!.opts.onSubmit('run a local command');
+    await vi.waitFor(() => {
+      expect(mocks.backendState.prompts).toHaveLength(1);
+    });
+
+    mocks.terminalChat.instance!.pick.mockResolvedValueOnce('allow-once');
+    const pending = mocks.backendState.constructorArgs.permissionHandler.handleToolCall(
+      'call-local-permission-1',
+      'execute',
+      { command: 'pwd' },
+      {
+        acpTitle: 'Run pwd',
+        acpKind: 'execute',
+        acpOptions: [
+          { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+        ],
+      },
+    );
+
+    await vi.waitFor(() => {
+      expect(mocks.terminalChat.instance!.pick).toHaveBeenCalledWith({
+        title: 'traex permission: Run pwd',
+        options: [
+          { key: 'allow-once', label: 'Allow once', description: 'allow_once' },
+          { key: 'reject-once', label: 'Reject', description: 'reject_once' },
+        ],
+      });
+    });
+
+    await expect(pending).resolves.toEqual({
+      decision: 'approved',
+      acpOptionId: 'allow-once',
+    });
+    expect(mocks.getAgentState().completedRequests?.['call-local-permission-1']).toMatchObject({
+      status: 'approved',
+      acpOptionId: 'allow-once',
+    });
+
+    releasePrompt();
+    await vi.waitFor(() => {
+      expect(consoleLines()).toEqual(expect.arrayContaining([
+        expect.stringContaining('✓ Turn completed'),
+      ]));
+    });
+
+    await mocks.getKillHandler()!();
+    expect(await runOutcome).toBeNull();
   });
 
   it('keeps the session alive after a user abort accepts the next prompt', async () => {

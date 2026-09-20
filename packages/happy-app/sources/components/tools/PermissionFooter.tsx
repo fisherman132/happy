@@ -120,6 +120,12 @@ interface PermissionFooterProps {
         mode?: string;
         allowedTools?: string[];
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+        acpOptions?: Array<{
+            optionId: string;
+            name: string;
+            kind: string;
+        }>;
+        acpOptionId?: string;
     };
     sessionId: string;
     toolName: string;
@@ -264,6 +270,7 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
     const isApproved = permission.status === 'approved';
     const isDenied = permission.status === 'denied';
     const isPending = permission.status === 'pending';
+    const acpOptions = permission.acpOptions?.filter(option => option.optionId && option.name) ?? [];
 
     // Helper function to check if tool matches allowed pattern
     const isToolAllowed = (toolName: string, toolInput: any, allowedTools: string[] | undefined): boolean => {
@@ -424,6 +431,92 @@ export const PermissionFooter: React.FC<PermissionFooterProps> = ({ permission, 
             numberOfLines={numberOfLines}
         />
     );
+
+    const decisionForAcpKind = (kind: string): 'approved' | 'approved_for_session' | 'denied' | 'abort' => {
+        switch (kind) {
+            case 'allow_always':
+                return 'approved_for_session';
+            case 'allow_once':
+                return 'approved';
+            case 'reject_once':
+            case 'reject_always':
+                return 'denied';
+            default:
+                return 'abort';
+        }
+    };
+
+    const isAcpApproveKind = (kind: string): boolean => kind === 'allow_once' || kind === 'allow_always';
+
+    const handleAcpOption = async (option: { optionId: string; name: string; kind: string }) => {
+        if (permission.status !== 'pending' || loadingButton !== null || loadingForSession) return;
+
+        const approved = isAcpApproveKind(option.kind);
+        setLoadingButton(approved ? 'allow' : 'deny');
+        try {
+            const decision = decisionForAcpKind(option.kind);
+            if (approved) {
+                await sessionAllow(
+                    sessionId,
+                    permission.id,
+                    undefined,
+                    undefined,
+                    decision === 'approved_for_session' ? 'approved_for_session' : 'approved',
+                    undefined,
+                    option.optionId,
+                );
+            } else {
+                await sessionDeny(
+                    sessionId,
+                    permission.id,
+                    undefined,
+                    undefined,
+                    decision === 'denied' ? 'denied' : 'abort',
+                    option.optionId,
+                );
+            }
+        } catch (error) {
+            console.error('Failed to answer ACP permission:', error);
+        } finally {
+            setLoadingButton(null);
+        }
+    };
+
+    if (acpOptions.length > 0) {
+        return (
+            <View style={styles.container}>
+                <ScrollView
+                    style={styles.optionsScroll}
+                    contentContainerStyle={styles.buttonContainer}
+                    nestedScrollEnabled
+                    showsVerticalScrollIndicator={false}
+                >
+                    {acpOptions.map((option) => {
+                        const approved = isAcpApproveKind(option.kind);
+                        const selected = permission.acpOptionId === option.optionId;
+                        return renderPermissionButton({
+                            label: option.name,
+                            loading: loadingButton === (approved ? 'allow' : 'deny') && isPending,
+                            onPress: () => { void handleAcpOption(option); },
+                            disabled: !isPending || loadingButton !== null || loadingForSession,
+                            buttonStyle: [
+                                styles.button,
+                                isPending && (approved ? styles.buttonAllow : styles.buttonDeny),
+                                selected && styles.buttonSelected,
+                                !selected && !isPending && styles.buttonInactive,
+                            ],
+                            textStyle: [
+                                styles.buttonText,
+                                isPending && (approved ? styles.buttonTextAllow : styles.buttonTextDeny),
+                                selected && styles.buttonTextSelected,
+                            ],
+                            numberOfLines: 2,
+                        });
+                    })}
+                </ScrollView>
+            </View>
+        );
+    }
 
     // Render Codex buttons if this is a Codex session
     if (isCodex) {

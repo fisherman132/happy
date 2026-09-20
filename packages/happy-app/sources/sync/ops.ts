@@ -33,6 +33,7 @@ interface SessionPermissionRequest {
     allowTools?: string[];
     updatedInput?: Record<string, unknown>;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    acpOptionId?: string;
 }
 
 /**
@@ -943,8 +944,8 @@ export async function sessionAbort(sessionId: string): Promise<void> {
 /**
  * Allow a permission request
  */
-export async function sessionAllow(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'approved' | 'approved_for_session', updatedInput?: Record<string, unknown>): Promise<void> {
-    const request: SessionPermissionRequest = { id, approved: true, mode, allowTools: allowedTools, decision, updatedInput };
+export async function sessionAllow(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'approved' | 'approved_for_session', updatedInput?: Record<string, unknown>, acpOptionId?: string): Promise<void> {
+    const request: SessionPermissionRequest = { id, approved: true, mode, allowTools: allowedTools, decision, updatedInput, acpOptionId };
     await apiSocket.sessionRPC(sessionId, 'permission', request);
 }
 
@@ -977,8 +978,8 @@ export async function sessionCancelCommunication(
 /**
  * Deny a permission request
  */
-export async function sessionDeny(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'denied' | 'abort'): Promise<void> {
-    const request: SessionPermissionRequest = { id, approved: false, mode, allowTools: allowedTools, decision };
+export async function sessionDeny(sessionId: string, id: string, mode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan', allowedTools?: string[], decision?: 'denied' | 'abort', acpOptionId?: string): Promise<void> {
+    const request: SessionPermissionRequest = { id, approved: false, mode, allowTools: allowedTools, decision, acpOptionId };
     await apiSocket.sessionRPC(sessionId, 'permission', request);
 }
 

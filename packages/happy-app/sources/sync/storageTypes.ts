@@ -350,7 +350,16 @@ export const AgentStateSchema = z.object({
         // Raw provider tool-use id when the request id is scoped (e.g. claude
         // subagent ids are `agentID:toolUseID`); used to join the permission
         // to its tool call, while the request id stays the response key.
-        toolUseId: z.string().nullish()
+        toolUseId: z.string().nullish(),
+        // ACP-native permission options. Older clients ignore these; newer
+        // clients use them to return the exact optionId the provider expects.
+        acpOptions: z.array(z.object({
+            optionId: z.string(),
+            name: z.string(),
+            kind: z.string(),
+        }).passthrough()).nullish(),
+        acpTitle: z.string().nullish(),
+        acpKind: z.string().nullish(),
     })).nullish(),
     completedRequests: z.record(z.string(), z.object({
         tool: z.string(),
@@ -367,7 +376,15 @@ export const AgentStateSchema = z.object({
         // reducer folds it into `allowedTools` when reading.
         allowTools: z.array(z.string()).nullish(),
         decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).nullish(),
-        toolUseId: z.string().nullish()
+        toolUseId: z.string().nullish(),
+        acpOptions: z.array(z.object({
+            optionId: z.string(),
+            name: z.string(),
+            kind: z.string(),
+        }).passthrough()).nullish(),
+        acpTitle: z.string().nullish(),
+        acpKind: z.string().nullish(),
+        acpOptionId: z.string().nullish(),
     })).nullish(),
     agentGoalStatus: AgentGoalStatusSchema.optional(),
 });

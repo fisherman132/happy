@@ -30,7 +30,6 @@ function parseThinkingPayload(payload: unknown): { text: string; streaming: bool
 
 export class AcpSessionManager {
   private currentTurnId: string | null = null;
-  private readonly acpCallToSessionCall = new Map<string, string>();
 
   /** Monotonic clock: max(lastTime + 1, Date.now()) */
   private lastTime = 0;
@@ -42,17 +41,6 @@ export class AcpSessionManager {
   private nextTime(): number {
     this.lastTime = Math.max(this.lastTime + 1, Date.now());
     return this.lastTime;
-  }
-
-  private ensureSessionCallId(acpCallId: string): string {
-    const existing = this.acpCallToSessionCall.get(acpCallId);
-    if (existing) {
-      return existing;
-    }
-
-    const created = createId();
-    this.acpCallToSessionCall.set(acpCallId, created);
-    return created;
   }
 
   private flush(): SessionEnvelope[] {
@@ -79,7 +67,6 @@ export class AcpSessionManager {
     }
 
     this.currentTurnId = createId();
-    this.acpCallToSessionCall.clear();
     return [
       createEnvelope('agent', { t: 'turn-start' }, { turn: this.currentTurnId, time: this.nextTime() }),
     ];
@@ -93,7 +80,6 @@ export class AcpSessionManager {
 
     const turnId = this.currentTurnId;
     this.currentTurnId = null;
-    this.acpCallToSessionCall.clear();
     return [
       ...flushed,
       createEnvelope('agent', { t: 'turn-end', status }, { turn: turnId, time: this.nextTime() }),
@@ -155,15 +141,14 @@ export class AcpSessionManager {
 
     if (msg.type === 'tool-call') {
       const flushed = this.flush();
-      const call = this.ensureSessionCallId(msg.callId);
       return [
         ...flushed,
         createEnvelope('agent', {
           t: 'tool-call-start',
-          call,
+          call: msg.callId,
           name: msg.toolName,
-          title: buildToolTitle(msg.toolName),
-          description: buildToolDescription(msg.toolName),
+          title: msg.title?.trim() || buildToolTitle(msg.toolName),
+          description: msg.description?.trim() || buildToolDescription(msg.toolName),
           args: msg.args,
         }, turnOptions(this.currentTurnId, this.nextTime())),
       ];
@@ -171,10 +156,9 @@ export class AcpSessionManager {
 
     if (msg.type === 'tool-result') {
       const flushed = this.flush();
-      const call = this.ensureSessionCallId(msg.callId);
       return [
         ...flushed,
-        createEnvelope('agent', { t: 'tool-call-end', call }, turnOptions(this.currentTurnId, this.nextTime())),
+        createEnvelope('agent', { t: 'tool-call-end', call: msg.callId }, turnOptions(this.currentTurnId, this.nextTime())),
       ];
     }
 

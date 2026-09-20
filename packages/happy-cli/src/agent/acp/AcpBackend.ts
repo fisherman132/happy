@@ -23,6 +23,8 @@ import {
   type ResumeSessionResponse,
   type PromptRequest,
   type ContentBlock,
+  type ToolCallUpdate,
+  type PermissionOption,
 } from '@agentclientprotocol/sdk';
 import { randomUUID } from 'node:crypto';
 import type {
@@ -115,9 +117,12 @@ import {
  */
 type ExtendedRequestPermissionRequest = RequestPermissionRequest & {
   toolCall?: {
+    toolCallId?: string;
     id?: string;
     kind?: string;
     toolName?: string;
+    title?: string | null;
+    rawInput?: unknown;
     input?: Record<string, unknown>;
     arguments?: Record<string, unknown>;
     content?: Record<string, unknown>;
@@ -171,8 +176,14 @@ export interface AcpPermissionHandler {
   handleToolCall(
     toolCallId: string,
     toolName: string,
-    input: unknown
-  ): Promise<{ decision: 'approved' | 'approved_for_session' | 'denied' | 'abort' }>;
+    input: unknown,
+    details?: {
+      toolUseId?: string;
+      acpOptions?: Array<{ optionId: string; name: string; kind: string }>;
+      acpTitle?: string | null;
+      acpKind?: string | null;
+    }
+  ): Promise<{ decision: 'approved' | 'approved_for_session' | 'denied' | 'abort'; acpOptionId?: string }>;
 }
 
 /**
@@ -297,6 +308,111 @@ function describeAcpError(error: unknown): string {
     // fall through
   }
   return String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function rawInputToPermissionInput(rawInput: unknown): Record<string, unknown> {
+  if (rawInput === undefined || rawInput === null) {
+    return {};
+  }
+  if (Array.isArray(rawInput)) {
+    return { items: rawInput };
+  }
+  if (isRecord(rawInput)) {
+    return rawInput;
+  }
+  return { input: rawInput };
+}
+
+function contentToPermissionInput(content: unknown): Record<string, unknown> {
+  if (content === undefined || content === null) {
+    return {};
+  }
+  if (Array.isArray(content)) {
+    return { content };
+  }
+  if (isRecord(content)) {
+    return content;
+  }
+  return { content };
+}
+
+function extractPermissionInput(toolCall: ExtendedRequestPermissionRequest['toolCall']): Record<string, unknown> {
+  if (!toolCall) {
+    return {};
+  }
+
+  if ('rawInput' in toolCall) {
+    return rawInputToPermissionInput(toolCall.rawInput);
+  }
+  if (toolCall.input) {
+    return toolCall.input;
+  }
+  if (toolCall.arguments) {
+    return toolCall.arguments;
+  }
+  if (toolCall.content) {
+    return contentToPermissionInput(toolCall.content);
+  }
+  return {};
+}
+
+function normalizePermissionOptions(options: PermissionOption[] | ExtendedRequestPermissionRequest['options'] | undefined): Array<{
+  optionId: string;
+  name: string;
+  kind: string;
+}> {
+  if (!Array.isArray(options)) {
+    return [];
+  }
+  return options
+    .map((option) => {
+      const optionId = typeof option.optionId === 'string' ? option.optionId : '';
+      const name = typeof option.name === 'string' ? option.name : optionId;
+      const kind = typeof option.kind === 'string' ? option.kind : '';
+      return optionId ? { optionId, name, kind } : null;
+    })
+    .filter((option): option is { optionId: string; name: string; kind: string } => option !== null);
+}
+
+function findPermissionOption(
+  options: Array<{ optionId: string; name: string; kind: string }>,
+  predicate: (option: { optionId: string; name: string; kind: string }) => boolean
+): string | null {
+  return options.find(predicate)?.optionId ?? null;
+}
+
+function resolveAcpOptionId(
+  options: Array<{ optionId: string; name: string; kind: string }>,
+  result: { decision: 'approved' | 'approved_for_session' | 'denied' | 'abort'; acpOptionId?: string }
+): string {
+  if (result.acpOptionId && options.some((option) => option.optionId === result.acpOptionId)) {
+    return result.acpOptionId;
+  }
+
+  const byKind = (kind: string) => findPermissionOption(options, (option) => option.kind === kind);
+  const byIdOrName = (...needles: string[]) => findPermissionOption(options, (option) => {
+    const id = option.optionId.toLowerCase();
+    const name = option.name.toLowerCase();
+    return needles.some((needle) => id.includes(needle) || name.includes(needle));
+  });
+
+  if (result.decision === 'approved_for_session') {
+    return byKind('allow_always') ?? byIdOrName('always', 'session') ?? byKind('allow_once') ?? options[0]?.optionId ?? 'proceed_always';
+  }
+
+  if (result.decision === 'approved') {
+    return byKind('allow_once') ?? byIdOrName('once', 'allow', 'proceed', 'approve', 'yes') ?? options[0]?.optionId ?? 'proceed_once';
+  }
+
+  if (result.decision === 'denied') {
+    return byKind('reject_once') ?? byIdOrName('reject', 'deny', 'decline', 'no') ?? options[0]?.optionId ?? 'cancel';
+  }
+
+  return byKind('reject_once') ?? byIdOrName('cancel', 'abort', 'stop', 'reject', 'deny') ?? options[0]?.optionId ?? 'cancel';
 }
 
 /**
@@ -595,23 +711,23 @@ export class AcpBackend implements AgentBackend {
           this.handleSessionUpdate(params);
         },
         requestPermission: async (params: RequestPermissionRequest): Promise<RequestPermissionResponse> => {
-          
           const extendedParams = params as ExtendedRequestPermissionRequest;
-          const toolCall = extendedParams.toolCall;
-          let toolName = toolCall?.kind || toolCall?.toolName || extendedParams.kind || 'Unknown tool';
+          const toolCall = extendedParams.toolCall as (ToolCallUpdate & ExtendedRequestPermissionRequest['toolCall']) | undefined;
+          const rawToolName = toolCall?.toolName || toolCall?.kind || extendedParams.kind || toolCall?.title || 'Unknown tool';
+          let toolName = rawToolName;
           // Use toolCallId as the single source of truth for permission ID
           // This ensures mobile app sends back the same ID that we use to store pending requests
-          const toolCallId = toolCall?.id || randomUUID();
+          const toolCallId = toolCall?.toolCallId || toolCall?.id || randomUUID();
           const permissionId = toolCallId; // Use same ID for consistency!
           
           // Extract input/arguments from various possible locations FIRST (before checking toolName)
-          let input: Record<string, unknown> = {};
-          if (toolCall) {
-            input = toolCall.input || toolCall.arguments || toolCall.content || {};
-          } else {
-            // If no toolCall, try to extract from params directly
-            input = extendedParams.input || extendedParams.arguments || extendedParams.content || {};
-          }
+          const input = toolCall
+            ? extractPermissionInput(toolCall)
+            : (
+                extendedParams.input
+                || extendedParams.arguments
+                || contentToPermissionInput(extendedParams.content)
+              );
           
           // If toolName is "other" or "Unknown tool", try to determine real tool name
           const context: ToolNameContext = {
@@ -620,23 +736,25 @@ export class AcpBackend implements AgentBackend {
           };
           toolName = this.transport.determineToolName?.(toolName, toolCallId, input, context) ?? toolName;
           
-          if (toolName !== (toolCall?.kind || toolCall?.toolName || extendedParams.kind || 'Unknown tool')) {
+          if (toolName !== rawToolName) {
             logger.debug(`[AcpBackend] Detected tool name: ${toolName} from toolCallId: ${toolCallId}`);
           }
           
           // Increment tool call counter for context tracking
           this.toolCallCountSincePrompt++;
           
-          const options = extendedParams.options || [];
+          const options = normalizePermissionOptions(extendedParams.options);
           
           // Log permission request for debugging (include full params to understand structure)
           logger.debug(`[AcpBackend] Permission request: tool=${toolName}, toolCallId=${toolCallId}, input=`, JSON.stringify(input));
           logger.debug(`[AcpBackend] Permission request params structure:`, JSON.stringify({
             hasToolCall: !!toolCall,
             toolCallKind: toolCall?.kind,
-            toolCallId: toolCall?.id,
+            toolCallId: toolCall?.toolCallId || toolCall?.id,
+            toolCallTitle: toolCall?.title,
             paramsKind: extendedParams.kind,
             paramsKeys: Object.keys(params),
+            options,
           }, null, 2));
           
           // Emit permission request event for UI/mobile handling
@@ -650,8 +768,11 @@ export class AcpBackend implements AgentBackend {
               toolCallId,
               toolName,
               input,
+              title: toolCall?.title ?? null,
+              kind: typeof toolCall?.kind === 'string' ? toolCall.kind : null,
               options: options.map((opt) => ({
                 id: opt.optionId,
+                optionId: opt.optionId,
                 name: opt.name,
                 kind: opt.kind,
               })),
@@ -664,32 +785,20 @@ export class AcpBackend implements AgentBackend {
               const result = await this.options.permissionHandler.handleToolCall(
                 toolCallId,
                 toolName,
-                input
+                input,
+                {
+                  toolUseId: toolCallId,
+                  acpOptions: options,
+                  acpTitle: toolCall?.title ?? null,
+                  acpKind: typeof toolCall?.kind === 'string' ? toolCall.kind : null,
+                }
               );
               
               // Map permission decision to ACP response
               // ACP uses optionId from the request options
-              let optionId = 'cancel'; // Default to cancel/deny
+              const optionId = resolveAcpOptionId(options, result);
               
               if (result.decision === 'approved' || result.decision === 'approved_for_session') {
-                // Find the appropriate optionId from the request options
-                // Look for 'proceed_once' or 'proceed_always' in options
-                const proceedOnceOption = options.find((opt: any) => 
-                  opt.optionId === 'proceed_once' || opt.name?.toLowerCase().includes('once')
-                );
-                const proceedAlwaysOption = options.find((opt: any) => 
-                  opt.optionId === 'proceed_always' || opt.name?.toLowerCase().includes('always')
-                );
-                
-                if (result.decision === 'approved_for_session' && proceedAlwaysOption) {
-                  optionId = proceedAlwaysOption.optionId || 'proceed_always';
-                } else if (proceedOnceOption) {
-                  optionId = proceedOnceOption.optionId || 'proceed_once';
-                } else if (options.length > 0) {
-                  // Fallback to first option if no specific match
-                  optionId = options[0].optionId || 'proceed_once';
-                }
-                
                 // Emit tool-result with permissionId so UI can close the timer
                 // This is needed because tool_call_update comes with a different ID
                 this.emit({
@@ -699,14 +808,6 @@ export class AcpBackend implements AgentBackend {
                   callId: permissionId,
                 });
               } else {
-                // Denied or aborted - find cancel option
-                const cancelOption = options.find((opt: any) => 
-                  opt.optionId === 'cancel' || opt.name?.toLowerCase().includes('cancel')
-                );
-                if (cancelOption) {
-                  optionId = cancelOption.optionId || 'cancel';
-                }
-                
                 // Emit tool-result for denied/aborted
                 this.emit({
                   type: 'tool-result',
@@ -721,16 +822,13 @@ export class AcpBackend implements AgentBackend {
               // Log to file only, not console
               logger.debug('[AcpBackend] Error in permission handler:', error);
               // Fallback to deny on error
-              return { outcome: { outcome: 'selected', optionId: 'cancel' } };
+              return { outcome: { outcome: 'selected', optionId: resolveAcpOptionId(options, { decision: 'abort' }) } };
             }
           }
           
           // Auto-approve with 'proceed_once' if no permission handler
           // optionId must match one from the request options (e.g., 'proceed_once', 'proceed_always', 'cancel')
-          const proceedOnceOption = options.find((opt) => 
-            opt.optionId === 'proceed_once' || (typeof opt.name === 'string' && opt.name.toLowerCase().includes('once'))
-          );
-          const defaultOptionId = proceedOnceOption?.optionId || (options.length > 0 && options[0].optionId ? options[0].optionId : 'proceed_once');
+          const defaultOptionId = resolveAcpOptionId(options, { decision: 'approved' });
           return { outcome: { outcome: 'selected', optionId: defaultOptionId } };
         },
       };

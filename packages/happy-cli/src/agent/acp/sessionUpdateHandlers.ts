@@ -31,6 +31,8 @@ export interface SessionUpdate {
   toolCallId?: string;
   status?: string;
   kind?: string | unknown;
+  title?: string | null;
+  rawInput?: unknown;
   content?: {
     text?: string;
     error?: string | { message?: string };
@@ -94,6 +96,21 @@ export function parseArgsFromContent(content: unknown): Record<string, unknown> 
     return content as Record<string, unknown>;
   }
   return {};
+}
+
+function parseArgsFromUpdate(update: SessionUpdate): Record<string, unknown> {
+  if (update.rawInput !== undefined && update.rawInput !== null) {
+    const rawInput = update.rawInput;
+    if (Array.isArray(rawInput)) {
+      return { items: rawInput };
+    }
+    if (typeof rawInput === 'object') {
+      return rawInput as Record<string, unknown>;
+    }
+    return { input: rawInput };
+  }
+
+  return parseArgsFromContent(update.content);
 }
 
 /**
@@ -249,7 +266,7 @@ export function startToolCall(
 
   // Extract real tool name from toolCallId
   const extractedName = ctx.transport.extractToolNameFromId?.(toolCallId);
-  const realToolName = extractedName ?? (toolKindStr || 'unknown');
+  const realToolName = update.title || extractedName || toolKindStr || 'unknown';
 
   // Store mapping for permission requests
   ctx.toolCallIdToNameMap.set(toolCallId, realToolName);
@@ -295,7 +312,7 @@ export function startToolCall(
   ctx.emit({ type: 'status', status: 'running' });
 
   // Parse args and emit tool-call event
-  const args = parseArgsFromContent(update.content);
+  const args = parseArgsFromUpdate(update);
 
   // Extract locations if present
   if (update.locations && Array.isArray(update.locations)) {
@@ -309,9 +326,11 @@ export function startToolCall(
 
   ctx.emit({
     type: 'tool-call',
-    toolName: toolKindStr || 'unknown',
+    toolName: realToolName,
     args,
     callId: toolCallId,
+    title: update.title ?? realToolName,
+    description: update.title ?? null,
   });
 }
 
@@ -327,6 +346,7 @@ export function completeToolCall(
   const startTime = ctx.toolCallStartTimes.get(toolCallId);
   const duration = formatDuration(startTime);
   const toolKindStr = typeof toolKind === 'string' ? toolKind : 'unknown';
+  const toolName = ctx.toolCallIdToNameMap.get(toolCallId) || toolKindStr;
 
   ctx.activeToolCalls.delete(toolCallId);
   ctx.toolCallStartTimes.delete(toolCallId);
@@ -337,11 +357,11 @@ export function completeToolCall(
     ctx.toolCallTimeouts.delete(toolCallId);
   }
 
-  logger.debug(`[AcpBackend] ✅ Tool call COMPLETED: ${toolCallId} (${toolKindStr}) - Duration: ${duration}. Active tool calls: ${ctx.activeToolCalls.size}`);
+  logger.debug(`[AcpBackend] ✅ Tool call COMPLETED: ${toolCallId} (${toolName}) - Duration: ${duration}. Active tool calls: ${ctx.activeToolCalls.size}`);
 
   ctx.emit({
     type: 'tool-result',
-    toolName: toolKindStr,
+    toolName,
     result: content,
     callId: toolCallId,
   });
@@ -367,7 +387,8 @@ export function failToolCall(
   const startTime = ctx.toolCallStartTimes.get(toolCallId);
   const duration = startTime ? Date.now() - startTime : null;
   const toolKindStr = typeof toolKind === 'string' ? toolKind : 'unknown';
-  const isInvestigation = ctx.transport.isInvestigationTool?.(toolCallId, toolKindStr) ?? false;
+  const toolName = ctx.toolCallIdToNameMap.get(toolCallId) || toolKindStr;
+  const isInvestigation = ctx.transport.isInvestigationTool?.(toolCallId, toolName) ?? false;
   const hadTimeout = ctx.toolCallTimeouts.has(toolCallId);
 
   // Log detailed timing for investigation tools BEFORE cleanup
@@ -404,7 +425,7 @@ export function failToolCall(
   }
 
   const durationStr = formatDuration(startTime);
-  logger.debug(`[AcpBackend] ❌ Tool call ${status.toUpperCase()}: ${toolCallId} (${toolKindStr}) - Duration: ${durationStr}. Active tool calls: ${ctx.activeToolCalls.size}`);
+  logger.debug(`[AcpBackend] ❌ Tool call ${status.toUpperCase()}: ${toolCallId} (${toolName}) - Duration: ${durationStr}. Active tool calls: ${ctx.activeToolCalls.size}`);
 
   // Extract error detail
   const errorDetail = extractErrorDetail(content);
@@ -417,7 +438,7 @@ export function failToolCall(
   // Emit tool-result with error
   ctx.emit({
     type: 'tool-result',
-    toolName: toolKindStr,
+    toolName,
     result: errorDetail
       ? { error: errorDetail, status }
       : { error: `Tool call ${status}`, status },

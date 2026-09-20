@@ -18,6 +18,8 @@ export interface PermissionResponse {
     id: string;
     approved: boolean;
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    /** ACP permission option selected by the user. */
+    acpOptionId?: string;
 }
 
 /**
@@ -35,6 +37,21 @@ export interface PendingRequest {
  */
 export interface PermissionResult {
     decision: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    /** ACP permission option selected by the user. */
+    acpOptionId?: string;
+}
+
+export interface AcpPermissionOption {
+    optionId: string;
+    name: string;
+    kind: 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | string;
+}
+
+export interface PendingRequestStateDetails {
+    toolUseId?: string;
+    acpOptions?: AcpPermissionOption[];
+    acpTitle?: string | null;
+    acpKind?: string | null;
 }
 
 /**
@@ -76,48 +93,65 @@ export abstract class BasePermissionHandler {
         this.session.rpcHandlerManager.registerHandler<PermissionResponse, void>(
             'permission',
             async (response) => {
-                const pending = this.pendingRequests.get(response.id);
-                if (!pending) {
-                    logger.debug(`${this.getLogPrefix()} Permission request not found or already resolved`);
-                    return;
-                }
-
-                // Remove from pending
-                this.pendingRequests.delete(response.id);
-
-                // Resolve the permission request
-                const result: PermissionResult = response.approved
-                    ? { decision: response.decision === 'approved_for_session' ? 'approved_for_session' : 'approved' }
-                    : { decision: response.decision === 'denied' ? 'denied' : 'abort' };
-
-                pending.resolve(result);
-
-                // Move request to completed in agent state
-                this.session.updateAgentState((currentState) => {
-                    const request = currentState.requests?.[response.id];
-                    if (!request) return currentState;
-
-                    const { [response.id]: _, ...remainingRequests } = currentState.requests || {};
-
-                    let res = {
-                        ...currentState,
-                        requests: remainingRequests,
-                        completedRequests: {
-                            ...currentState.completedRequests,
-                            [response.id]: {
-                                ...request,
-                                completedAt: Date.now(),
-                                status: response.approved ? 'approved' : 'denied',
-                                decision: result.decision
-                            }
-                        }
-                    } satisfies AgentState;
-                    return res;
-                });
-
-                logger.debug(`${this.getLogPrefix()} Permission ${response.approved ? 'approved' : 'denied'} for ${pending.toolName}`);
+                await this.resolvePermissionResponse(response);
             }
         );
+    }
+
+    /**
+     * Resolve a pending permission from any UI surface. Mobile uses the RPC
+     * handler above; terminal ACP sessions call this directly after their
+     * in-terminal picker returns. The first response wins.
+     */
+    protected async resolvePermissionResponse(response: PermissionResponse): Promise<boolean> {
+        const pending = this.pendingRequests.get(response.id);
+        if (!pending) {
+            logger.debug(`${this.getLogPrefix()} Permission request not found or already resolved`);
+            return false;
+        }
+
+        // Remove from pending
+        this.pendingRequests.delete(response.id);
+
+        // Resolve the permission request
+        const result: PermissionResult = response.approved
+            ? {
+                decision: response.decision === 'approved_for_session' ? 'approved_for_session' : 'approved',
+                acpOptionId: response.acpOptionId,
+            }
+            : {
+                decision: response.decision === 'denied' ? 'denied' : 'abort',
+                acpOptionId: response.acpOptionId,
+            };
+
+        pending.resolve(result);
+
+        // Move request to completed in agent state
+        await this.session.updateAgentState((currentState) => {
+            const request = currentState.requests?.[response.id];
+            if (!request) return currentState;
+
+            const { [response.id]: _, ...remainingRequests } = currentState.requests || {};
+
+            let res = {
+                ...currentState,
+                requests: remainingRequests,
+                completedRequests: {
+                    ...currentState.completedRequests,
+                    [response.id]: {
+                        ...request,
+                        completedAt: Date.now(),
+                        status: response.approved ? 'approved' : 'denied',
+                        decision: result.decision,
+                        acpOptionId: response.acpOptionId,
+                    }
+                }
+            } satisfies AgentState;
+            return res;
+        });
+
+        logger.debug(`${this.getLogPrefix()} Permission ${response.approved ? 'approved' : 'denied'} for ${pending.toolName}`);
+        return true;
     }
 
     /**
@@ -129,8 +163,13 @@ export abstract class BasePermissionHandler {
      * entries precedence, so a re-raised request would otherwise never
      * render and the provider would hang awaiting an answer.
      */
-    protected addPendingRequestToState(toolCallId: string, toolName: string, input: unknown): void {
-        this.session.updateAgentState((currentState) => {
+    protected addPendingRequestToState(
+        toolCallId: string,
+        toolName: string,
+        input: unknown,
+        details: PendingRequestStateDetails = {}
+    ): Promise<void> {
+        return this.session.updateAgentState((currentState) => {
             const { [toolCallId]: _completed, ...remainingCompleted } = currentState.completedRequests || {};
             return {
                 ...currentState,
@@ -139,7 +178,11 @@ export abstract class BasePermissionHandler {
                     [toolCallId]: {
                         tool: toolName,
                         arguments: input,
-                        createdAt: Date.now()
+                        createdAt: Date.now(),
+                        ...(details.toolUseId && details.toolUseId !== toolCallId ? { toolUseId: details.toolUseId } : {}),
+                        ...(details.acpOptions ? { acpOptions: details.acpOptions } : {}),
+                        ...(details.acpTitle !== undefined ? { acpTitle: details.acpTitle } : {}),
+                        ...(details.acpKind !== undefined ? { acpKind: details.acpKind } : {}),
                     }
                 },
                 completedRequests: remainingCompleted
@@ -169,7 +212,7 @@ export abstract class BasePermissionHandler {
         }
 
         // Move pending requests to completed as canceled in agent state
-        this.session.updateAgentState((currentState) => {
+        void this.session.updateAgentState((currentState) => {
             const pendingRequests = currentState.requests || {};
             const completedRequests = { ...currentState.completedRequests };
 
@@ -219,7 +262,7 @@ export abstract class BasePermissionHandler {
             }
 
             // Clear requests in agent state
-            this.session.updateAgentState((currentState) => {
+            void this.session.updateAgentState((currentState) => {
                 const pendingRequests = currentState.requests || {};
                 const completedRequests = { ...currentState.completedRequests };
 

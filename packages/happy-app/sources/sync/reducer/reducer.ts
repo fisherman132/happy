@@ -151,6 +151,12 @@ type StoredPermission = {
     mode?: string;
     allowedTools?: string[];
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort';
+    acpOptions?: Array<{
+        optionId: string;
+        name: string;
+        kind: string;
+    }>;
+    acpOptionId?: string;
 };
 
 export type ReducerState = {
@@ -580,7 +586,8 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         }
                         message.tool.permission = {
                             id: permId,
-                            status: 'pending'
+                            status: 'pending',
+                            acpOptions: request.acpOptions || undefined
                         };
                         changed.add(existingMessageId);
                     }
@@ -603,7 +610,8 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         result: undefined,
                         permission: {
                             id: permId,
-                            status: 'pending'
+                            status: 'pending',
+                            acpOptions: request.acpOptions || undefined
                         }
                     };
 
@@ -629,7 +637,8 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                     tool: request.tool,
                     arguments: request.arguments,
                     createdAt: request.createdAt || Date.now(),
-                    status: 'pending'
+                    status: 'pending',
+                    acpOptions: request.acpOptions || undefined
                 });
             }
         }
@@ -665,13 +674,15 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             message.tool.permission?.reason !== completed.reason ||
                             message.tool.permission?.mode !== completed.mode ||
                             message.tool.permission?.allowedTools !== completedAllowedTools ||
-                            message.tool.permission?.decision !== completed.decision;
+                            message.tool.permission?.decision !== completed.decision ||
+                            message.tool.permission?.acpOptionId !== completed.acpOptionId;
 
                         if (!needsUpdate) {
                             continue;
                         }
 
                         let hasChanged = false;
+                        const existingAcpOptions = message.tool.permission?.acpOptions;
 
                         // Update permission status
                         if (!message.tool.permission) {
@@ -681,7 +692,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                                 mode: completed.mode || undefined,
                                 allowedTools: completedAllowedTools || undefined,
                                 decision: completed.decision || undefined,
-                                reason: completed.reason || undefined
+                                reason: completed.reason || undefined,
+                                acpOptions: completed.acpOptions || existingAcpOptions || undefined,
+                                acpOptionId: completed.acpOptionId || undefined
                             };
                             hasChanged = true;
                         } else {
@@ -690,6 +703,8 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             message.tool.permission.mode = completed.mode || undefined;
                             message.tool.permission.allowedTools = completedAllowedTools || undefined;
                             message.tool.permission.decision = completed.decision || undefined;
+                            message.tool.permission.acpOptions = completed.acpOptions || message.tool.permission.acpOptions || undefined;
+                            message.tool.permission.acpOptionId = completed.acpOptionId || undefined;
                             if (completed.reason) {
                                 message.tool.permission.reason = completed.reason;
                             }
@@ -725,7 +740,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             reason: completed.reason || undefined,
                             mode: completed.mode || undefined,
                             allowedTools: completedAllowedTools || undefined,
-                            decision: completed.decision || undefined
+                            decision: completed.decision || undefined,
+                            acpOptions: completed.acpOptions || undefined,
+                            acpOptionId: completed.acpOptionId || undefined
                         });
 
                         if (hasChanged) {
@@ -751,7 +768,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             reason: completed.reason || undefined,
                             mode: completed.mode || undefined,
                             allowedTools: completedAllowedTools || undefined,
-                            decision: completed.decision || undefined
+                            decision: completed.decision || undefined,
+                            acpOptions: completed.acpOptions || undefined,
+                            acpOptionId: completed.acpOptionId || undefined
                         });
                         continue;
                     }
@@ -781,7 +800,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                             reason: completed.reason || undefined,
                             mode: completed.mode || undefined,
                             allowedTools: completedAllowedTools || undefined,
-                            decision: completed.decision || undefined
+                            decision: completed.decision || undefined,
+                            acpOptions: completed.acpOptions || undefined,
+                            acpOptionId: completed.acpOptionId || undefined
                         }
                     };
 
@@ -808,7 +829,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                         reason: completed.reason || undefined,
                         mode: completed.mode || undefined,
                         allowedTools: completedAllowedTools || undefined,
-                        decision: completed.decision || undefined
+                        decision: completed.decision || undefined,
+                        acpOptions: completed.acpOptions || undefined,
+                        acpOptionId: completed.acpOptionId || undefined
                     });
 
                     changed.add(mid);
@@ -1006,7 +1029,9 @@ export function reducer(state: ReducerState, messages: NormalizedMessage[], agen
                                 reason: permission.reason,
                                 mode: permission.mode,
                                 allowedTools: permission.allowedTools,
-                                decision: permission.decision
+                                decision: permission.decision,
+                                acpOptions: permission.acpOptions,
+                                acpOptionId: permission.acpOptionId
                             };
 
                             // Update state based on permission status

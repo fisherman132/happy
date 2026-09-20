@@ -419,6 +419,13 @@ export type AgentState = {
       // subagent ids are `agentID:toolUseID`); the app joins the permission
       // card to its tool call through this.
       toolUseId?: string
+      acpOptions?: Array<{
+        optionId: string,
+        name: string,
+        kind: string,
+      }>,
+      acpTitle?: string | null,
+      acpKind?: string | null,
     }
   }
   completedRequests?: {
@@ -436,7 +443,15 @@ export type AgentState = {
       // old key.
       allowTools?: string[],
       allowedTools?: string[],
-      toolUseId?: string
+      toolUseId?: string,
+      acpOptions?: Array<{
+        optionId: string,
+        name: string,
+        kind: string,
+      }>,
+      acpTitle?: string | null,
+      acpKind?: string | null,
+      acpOptionId?: string,
     }
   }
   agentGoalStatus?: AgentGoalStatus

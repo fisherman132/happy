@@ -23,7 +23,12 @@ import { decodeBase64, encodeBase64 } from '@/api/encryption';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { projectPath } from '@/projectPath';
-import { BasePermissionHandler, type PermissionResult } from '@/utils/BasePermissionHandler';
+import {
+  BasePermissionHandler,
+  type PendingRequestStateDetails,
+  type PermissionResponse,
+  type PermissionResult,
+} from '@/utils/BasePermissionHandler';
 import { connectionState } from '@/utils/serverConnectionErrors';
 import {
   extractConfigOptionsFromPayload,
@@ -120,6 +125,16 @@ function formatOptionalDetail(text: string | null | undefined, limit = ACP_EVENT
     return '';
   }
   return ` - ${truncateForConsole(toSingleLine(text), limit)}`;
+}
+
+function formatPermissionOptionList(details: PendingRequestStateDetails): string {
+  const options = details.acpOptions ?? [];
+  if (options.length === 0) {
+    return '';
+  }
+  return options
+    .map((option) => `${option.name}${option.kind ? ` (${option.kind})` : ''}`)
+    .join(', ');
 }
 
 function extractThinkingText(payload: unknown): string {
@@ -439,17 +454,38 @@ function resolveRequestedLegacyModelCode(models: SessionModelState, requested: s
 
 class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPermissionHandler {
   private readonly logPrefix: string;
+  private readonly notifyPermissionRequest?: (request: {
+    id: string;
+    toolName: string;
+    input: unknown;
+    details: PendingRequestStateDetails;
+  }) => void;
 
-  constructor(session: ApiSessionClient, agentName: string) {
+  constructor(
+    session: ApiSessionClient,
+    agentName: string,
+    notifyPermissionRequest?: (request: {
+      id: string;
+      toolName: string;
+      input: unknown;
+      details: PendingRequestStateDetails;
+    }) => void,
+  ) {
     super(session);
     this.logPrefix = `[${agentName}]`;
+    this.notifyPermissionRequest = notifyPermissionRequest;
   }
 
   protected getLogPrefix(): string {
     return this.logPrefix;
   }
 
-  async handleToolCall(toolCallId: string, toolName: string, input: unknown): Promise<PermissionResult> {
+  async handleToolCall(
+    toolCallId: string,
+    toolName: string,
+    input: unknown,
+    details: PendingRequestStateDetails = {}
+  ): Promise<PermissionResult> {
     return new Promise<PermissionResult>((resolve, reject) => {
       this.pendingRequests.set(toolCallId, {
         resolve,
@@ -457,9 +493,28 @@ class GenericAcpPermissionHandler extends BasePermissionHandler implements AcpPe
         toolName,
         input,
       });
-      this.addPendingRequestToState(toolCallId, toolName, input);
+      void this.addPendingRequestToState(toolCallId, toolName, input, details).then(() => {
+        this.notifyPermissionRequest?.({ id: toolCallId, toolName, input, details });
+      });
       logger.debug(`${this.logPrefix} Permission request sent for tool: ${toolName} (${toolCallId})`);
     });
+  }
+
+  async answerFromTerminal(requestId: string, optionId: string, details: PendingRequestStateDetails): Promise<boolean> {
+    const option = details.acpOptions?.find((item) => item.optionId === optionId);
+    const response: PermissionResponse = {
+      id: requestId,
+      approved: option?.kind === 'allow_once' || option?.kind === 'allow_always',
+      decision: option?.kind === 'allow_always'
+        ? 'approved_for_session'
+        : option?.kind === 'allow_once'
+          ? 'approved'
+          : option?.kind === 'reject_once' || option?.kind === 'reject_always'
+            ? 'denied'
+            : 'abort',
+      acpOptionId: optionId,
+    };
+    return this.resolvePermissionResponse(response);
   }
 }
 
@@ -566,6 +621,72 @@ export async function runAcp(opts: {
 
   let session: ApiSessionClient;
   let permissionHandler: GenericAcpPermissionHandler;
+  let terminalChat: TerminalChat | null = null;
+  let currentTurnOrigin: 'local' | 'remote' | null = null;
+  const handleAcpPermissionRequest = (request: {
+    id: string;
+    toolName: string;
+    input: unknown;
+    details: PendingRequestStateDetails;
+  }) => {
+    const permissionTitle = request.details.acpTitle || request.toolName;
+    const optionSummary = formatPermissionOptionList(request.details);
+    logAcp(
+      'tool',
+      `${opts.agentName} is waiting for permission: ${permissionTitle} (id=${request.id})${optionSummary ? ` options=[${optionSummary}]` : ''}`,
+    );
+
+    try {
+      api.push().sendSessionNotification({
+        kind: 'permission',
+        metadata: session.getMetadata(),
+        data: {
+          sessionId: session.sessionId,
+          requestId: request.id,
+          tool: request.toolName,
+          type: 'permission_request',
+          provider: opts.agentName,
+        },
+      });
+    } catch (error) {
+      logger.debug(`[${opts.agentName}] Failed to send permission push`, error);
+    }
+
+    if (!terminalChat) {
+      return;
+    }
+
+    if (currentTurnOrigin !== 'local') {
+      logAcp('muted', `${opts.agentName} permission is pending on the phone/app. Approve or reject it there to continue.`);
+      return;
+    }
+
+    if (!request.details.acpOptions?.length) {
+      logAcp('muted', `${opts.agentName} permission is pending, but this request did not include selectable ACP options. Use the phone/app permission card.`);
+      return;
+    }
+
+    void (async () => {
+      const selected = await terminalChat?.pick({
+        title: `${opts.agentName} permission: ${permissionTitle}`,
+        options: request.details.acpOptions!.map((option) => ({
+          key: option.optionId,
+          label: option.name,
+          description: option.kind,
+        })),
+      });
+      if (!selected) {
+        const reject = request.details.acpOptions!.find((option) => option.kind === 'reject_once')
+          ?? request.details.acpOptions!.find((option) => option.kind === 'reject_always')
+          ?? request.details.acpOptions![request.details.acpOptions!.length - 1];
+        await permissionHandler.answerFromTerminal(request.id, reject.optionId, request.details);
+        return;
+      }
+      await permissionHandler.answerFromTerminal(request.id, selected, request.details);
+    })().catch((error) => {
+      logger.debug(`[${opts.agentName}] Terminal permission picker failed:`, error);
+    });
+  };
   const { session: initialSession, reconnectionHandle } = setupOfflineReconnection({
     api,
     sessionTag,
@@ -606,7 +727,7 @@ export async function runAcp(opts: {
     }
   }
 
-  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName);
+  permissionHandler = new GenericAcpPermissionHandler(session, opts.agentName, handleAcpPermissionRequest);
   // Drop any permission requests left in agent state from a previous CLI
   // process that died while a tool prompt was open — see the matching
   // call in claudeRemoteLauncher for the full rationale.
@@ -651,7 +772,6 @@ export async function runAcp(opts: {
   let abortController = new AbortController();
   let pendingTurn: PendingTurn | null = null;
   let errorReportedForCurrentTurn = false;
-  let terminalChat: TerminalChat | null = null;
   let keepSessionOpenOnStartupError = false;
 
   const clearPendingTurn = (error?: Error) => {
@@ -1049,6 +1169,7 @@ export async function runAcp(opts: {
       logger.debug(`[${opts.agentName}] Requested ACP thought level: ${currentEffort ?? 'null'}`);
     }
 
+    currentTurnOrigin = 'remote';
     syncGate.beginTurn('remote');
     terminalChat?.showRemotePrompt(message.content.text);
     messageQueue.push(message.content.text, {
@@ -1175,6 +1296,7 @@ export async function runAcp(opts: {
         void handleTerminalModelCommand(text.slice('/model'.length));
         return;
       }
+      currentTurnOrigin = 'local';
       syncGate.beginTurn('local');
       if (syncGate.shouldUpload()) {
         session.sendSessionProtocolMessage(createEnvelope('user', { t: 'text', text }));
@@ -1321,6 +1443,7 @@ export async function runAcp(opts: {
           session.sendSessionEvent({ type: 'ready' });
         }
         syncGate.endTurn();
+        currentTurnOrigin = null;
         if (terminalChat && !verbose) {
           logAcp('muted', `✓ Turn completed in ${((Date.now() - turnStartedAt) / 1000).toFixed(1)}s`);
         }
@@ -1342,6 +1465,7 @@ export async function runAcp(opts: {
           session.sendSessionEvent({ type: 'ready' });
         }
         syncGate.endTurn();
+        currentTurnOrigin = null;
         terminalChat?.turnSettled();
         logAcp('error', `Prompt error from ${opts.agentName}: ${detail} — session kept alive, send another message to retry`);
         clearPendingTurn(error instanceof Error ? error : new Error(detail));
