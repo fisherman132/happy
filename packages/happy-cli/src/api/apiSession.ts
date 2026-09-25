@@ -676,12 +676,14 @@ export class ApiSessionClient extends EventEmitter {
     private static readonly MAX_OUTBOX_BATCH_SIZE = 50;
 
     private async flushOutbox() {
-        // Send latest messages first so the user sees recent activity immediately,
-        // then backfill older messages in subsequent batches.
+        // Send oldest messages first, strictly in order. Receivers apply
+        // updates through a consecutive-seq fast path; shipping newer batches
+        // before older ones forced every receiver into full refetches (visible
+        // as interrupted sync between phone and desktop) and silently dropped
+        // the older batches if the process exited before the backfill ran.
         while (this.pendingOutbox.length > 0) {
             const batchSize = Math.min(this.pendingOutbox.length, ApiSessionClient.MAX_OUTBOX_BATCH_SIZE);
-            const batchStart = this.pendingOutbox.length - batchSize;
-            const batch = this.pendingOutbox.slice(batchStart);
+            const batch = this.pendingOutbox.slice(0, batchSize);
 
             const response = await axios.post<V3PostSessionMessagesResponse>(
                 `${configuration.serverUrl}/v3/sessions/${encodeURIComponent(this.sessionId)}/messages`,
@@ -700,7 +702,7 @@ export class ApiSessionClient extends EventEmitter {
             // how a new session lost the first prompt. Our own messages come
             // back over the socket like everyone else's and move the cursor
             // then, once they have actually been seen.
-            this.pendingOutbox.splice(batchStart, batch.length);
+            this.pendingOutbox.splice(0, batch.length);
         }
     }
 

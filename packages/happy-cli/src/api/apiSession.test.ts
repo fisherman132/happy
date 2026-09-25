@@ -1241,6 +1241,40 @@ describe('ApiSessionClient v3 messages API migration', () => {
         expect((client as any).lastReceivedSeq).toBe(10);
     });
 
+    it('drains an over-limit outbox oldest-first across batches', async () => {
+        // Receivers apply updates through a consecutive-seq fast path; batches
+        // must reach the server in queue order or every receiver degrades to
+        // full refetches (the phone/desktop "sync interrupted" symptom).
+        const client = new ApiSessionClient('fake-token', session);
+        const batchSize = (ApiSessionClient as unknown as { MAX_OUTBOX_BATCH_SIZE: number }).MAX_OUTBOX_BATCH_SIZE;
+        const total = batchSize + 10;
+
+        for (let i = 0; i < total; i++) {
+            client.sendCodexMessage({ type: `msg-${i}` });
+        }
+
+        await waitForCheck(() => {
+            expect((client as any).pendingOutbox).toHaveLength(0);
+        });
+
+        const sentTypes = mockAxiosPost.mock.calls.flatMap((call) => {
+            const messages = call[1].messages as Array<{ content: string }>;
+            return messages.map((message) =>
+                (decrypt(session.encryptionKey, session.encryptionVariant, decodeBase64(message.content)) as { content: { data: { type: string } } }).content.data.type
+            );
+        });
+
+        expect(sentTypes).toHaveLength(total);
+        // Every POSTed batch must start where the previous one ended — strict
+        // queue order, oldest first, across however many batches timing split
+        // the drain into.
+        expect(sentTypes).toEqual(Array.from({ length: total }, (_, i) => `msg-${i}`));
+        for (const call of mockAxiosPost.mock.calls) {
+            const messages = call[1].messages as unknown[];
+            expect(messages.length).toBeLessThanOrEqual(batchSize);
+        }
+    });
+
     it('routes an app message whose seq lost the race to our own send', async () => {
         // The app posts a prompt and takes seq 1; our own startup event takes
         // seq 2 and its POST response comes back first. Seq 1 must still be
